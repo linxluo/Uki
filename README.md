@@ -35,10 +35,11 @@ UkiAgent/
 ├── requirements.txt    # Python 依赖
 ├── .env.example        # 环境变量模板（复制为 .env 后填配置）
 ├── main.py             # 入口：启动 Uki 的对话循环
-└── uki/
-    ├── __init__.py
-    ├── config.py       # 配置管理（API key、模型等）
-    └── agent.py        # Uki 的核心 Agent 类
+├── uki/
+│   ├── __init__.py
+│   ├── config.py       # 配置管理（API key、模型等）
+│   ├── agent.py        # Uki 的核心 Agent 类（代理循环）
+│   └── tools.py        # 工具集（读文件、列目录、写文件等）
 ```
 
 ## 开发日志
@@ -46,3 +47,4 @@ UkiAgent/
 - **第一课（2026-05-21）**：定义 Uki 的身份和核心理念，创建项目 README
 - **第二课（2026-05-21）**：搭建 Python 项目骨架。创建入口文件、配置管理、核心 Agent 类。Uki 已经可以进行简单对话。
 - **第三课（2026-05-21）**：修复 requirements.txt 编码问题，配置 API key，Uki 第一次成功对话。
+- **第四课（2026-05-21）**：实现代理循环。Uki 从"一问一答"升级为"思考→行动→观察"的循环模式。新增 tools.py（文件操作工具集），重写 agent.py 的 run() 方法。
