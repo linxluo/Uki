@@ -34,6 +34,7 @@ UkiAgent/
 ├── README.md           # 项目说明（就是本文档）
 ├── requirements.txt    # Python 依赖
 ├── .env.example        # 环境变量模板（复制为 .env 后填配置）
+├── UKI.md              # 项目规则文件（对应 Claude Code 的 CLAUDE.md）
 ├── main.py             # 入口：启动 Uki 的对话循环
 ├── uki/
 │   ├── __init__.py
@@ -51,3 +52,5 @@ UkiAgent/
 - **第四课（2026-05-21）**：实现代理循环。Uki 从"一问一答"升级为"思考→行动→观察"的循环模式。新增 tools.py（文件操作工具集），重写 agent.py 的 run() 方法。
 - **第五课（2026-05-21）**：新增命令系统。以 / 开头的输入由本地处理（/help, /tools, /config, /model），不消耗 LLM token。命令注册表可扩展，为后续插件系统打基础。
 - **第六课（2026-05-21）**：扩展工具集，新增 search_code（文件名和内容搜索），Uki 现在能在项目中自己找代码了。
+- **第七课（2026-05-21）**：实现规则文件系统（UKI.md）。Uki 启动时自动读取，注入 system prompt。你在 UKI.md 里写的规则，Uki 每次都遵守。
+- **第八课（2026-05-21）**：实现上下文管理。token 估算、自动裁剪、/compact 和 /context 命令。让 Uki 意识到自己记忆有限并自动处理。

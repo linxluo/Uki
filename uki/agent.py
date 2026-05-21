@@ -8,12 +8,20 @@ Uki 的核心 Agent 类
 """
 
 import json
+from pathlib import Path
 from openai import OpenAI
 from uki.config import Config
 from uki.tools import TOOL_DEFINITIONS, execute_tool
 
 # 最大循环轮数，防止无限循环消耗费用
 MAX_TURNS = 10
+
+# Token 相关（粗略估算：中文约 1 字符≈1 token，英文约 4 字符≈1 token）
+MAX_CONTEXT_TOKENS = 8000   # 当上下文超过此值时触发警告
+TRIM_THRESHOLD = 6000       # 裁剪后保留的 token 数
+
+# 项目规则文件名（对应 Claude Code 的 CLAUDE.md）
+RULES_FILE = "UKI.md"
 
 
 class UkiAgent:
@@ -25,7 +33,24 @@ class UkiAgent:
             base_url=Config.base_url,
         )
         self.model = Config.model
-        self.system_prompt = (
+        self.rules = self._load_rules()
+        self.system_prompt = self._build_system_prompt()
+
+    def _load_rules(self) -> str:
+        """读取项目规则文件 UKI.md（对应 Claude Code 的 CLAUDE.md）"""
+        rules_path = Path(RULES_FILE)
+        if rules_path.exists():
+            try:
+                content = rules_path.read_text(encoding="utf-8").strip()
+                if content:
+                    return f"\n\n## 项目规则（来自 {RULES_FILE}）\n以下规则由项目维护者设定，每次对话都必须遵守：\n\n{content}"
+            except Exception:
+                pass
+        return ""
+
+    def _build_system_prompt(self) -> str:
+        """构建完整的系统提示词（基础角色 + 项目规则）"""
+        base = (
             "你是 Uki，一个温暖、多变的日常助手。\n\n"
             "你有能力使用工具来完成用户的请求。面对任务时，按以下方式思考：\n"
             "1. 理解用户想要什么\n"
@@ -34,9 +59,9 @@ class UkiAgent:
             "4. 直到任务完成，给出清晰、友好的总结\n\n"
             "重要规则：\n"
             "- 优先使用工具获取真实信息，不要猜测\n"
-            "- 每次只调用一个工具\n"
-            "- 操作前先列出当前目录的文件，了解环境"
+            "- 每次只调用一个工具"
         )
+        return base + self.rules
 
     # ================================================================
     # 核心循环（这是第四课最重要的代码）
@@ -57,6 +82,14 @@ class UkiAgent:
         turn = 0
         while turn < MAX_TURNS:
             turn += 1
+
+            # 【第八课】检查上下文用量
+            token_est = self._estimate_tokens(messages)
+            if token_est > MAX_CONTEXT_TOKENS:
+                print(f"  ⚠️ 上下文接近上限（约 {token_est} tokens），正在自动压缩...")
+                messages = self._trim_context(messages)
+                print(f"  ✓ 压缩后约 {self._estimate_tokens(messages)} tokens")
+
             print(f"\n--- 第 {turn} 轮 ---")
 
             # 让 LLM 思考并决定下一步
@@ -114,6 +147,48 @@ class UkiAgent:
             break
 
         print(f"\n  ⚠️ 达到最大轮数（{MAX_TURNS}），Uki 停止了思考。")
+
+    def _estimate_tokens(self, messages: list) -> int:
+        """粗略估算当前消息的 token 数"""
+        total = 0
+        for msg in messages:
+            content = msg.get("content", "") or ""
+            total += len(content)
+        # 中文约 1 字符≈1.3 token，英文约 3 字符≈1 token
+        # 这里用折中值：1.5 字符≈1 token
+        return int(total / 1.5)
+
+    def _trim_context(self, messages: list) -> list:
+        """
+        裁剪上下文：保留 system prompt 和最近的消息。
+        删除中间轮次的消息，确保总 token 数在阈值以下。
+        """
+        if len(messages) <= 2:
+            return messages
+
+        # system 消息永远保留
+        system_msg = messages[0]
+        rest = messages[1:]
+
+        # 从后面保留消息，直到接近阈值
+        kept = []
+        current_tokens = self._estimate_tokens([system_msg])
+
+        for msg in reversed(rest):
+            msg_tokens = len(msg.get("content", "") or "") / 1.5
+            if current_tokens + msg_tokens > TRIM_THRESHOLD:
+                break
+            kept.insert(0, msg)
+            current_tokens += msg_tokens
+
+        result = [system_msg]
+        if len(kept) < len(rest):
+            result.append({
+                "role": "system",
+                "content": "（中间的对话已被压缩以节省上下文空间）"
+            })
+        result.extend(kept)
+        return result
 
     # ================================================================
     # 底层 LLM 调用
