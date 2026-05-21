@@ -35,6 +35,11 @@ class UkiAgent:
         self.model = Config.model
         self.rules = self._load_rules()
         self.system_prompt = self._build_system_prompt()
+        self.conversation_history: list[dict] = []  # 跨轮次对话历史
+
+    def clear_history(self):
+        """清除跨轮次对话历史"""
+        self.conversation_history = []
 
     def _load_rules(self) -> str:
         """读取项目规则文件 UKI.md（对应 Claude Code 的 CLAUDE.md）"""
@@ -73,11 +78,10 @@ class UkiAgent:
 
         对应 Claude Code 的: Prompt → 收集上下文 → 执行动作 → 验证结果 → （循环）
         """
-        # 消息历史：系统提示 + 用户消息 + 助手回复 + 工具结果
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_message},
-        ]
+        # 消息历史：system prompt + 之前的对话历史 + 当前用户消息
+        messages = [{"role": "system", "content": self.system_prompt}]
+        messages.extend(self.conversation_history)
+        messages.append({"role": "user", "content": user_message})
 
         turn = 0
         while turn < MAX_TURNS:
@@ -135,11 +139,9 @@ class UkiAgent:
             content = message.content or ""
             if content.strip():
                 print(f"\n  ✨ Uki: {content}")
-                # 把回复加入历史，然后结束循环
-                messages.append({
-                    "role": "assistant",
-                    "content": content,
-                })
+                # 把当前对话保存到跨轮次历史
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": content})
                 return content
 
             # 情况 C：空回复（不太正常，但可以处理）

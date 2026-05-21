@@ -49,6 +49,13 @@ def main():
             print("Uki: 再见！有需要随时找我。")
             break
 
+        # /clear 需要访问 agent 实例来真正清除历史
+        if user_input.lower().startswith("/clear"):
+            uki.clear_history()
+            print("[本地命令] 会话已清除，Uki 不再记得之前的对话。")
+            print()
+            continue
+
         # 先检查是否是本地命令（以 / 开头）
         cmd = commands.match(user_input)
         if cmd:
