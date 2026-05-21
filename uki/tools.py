@@ -72,6 +72,32 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_code",
+            "description": "在项目中搜索代码。支持按文件名（glob）和内容（正则）两种搜索方式。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "搜索模式。文件名搜索用 glob（如 *.py），内容搜索用正则（如 def\\s+\\w+）",
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["filename", "content"],
+                        "description": "filename 按文件名搜索，content 按文件内容搜索",
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "搜索目录，默认 '.' 表示当前目录",
+                    },
+                },
+                "required": ["pattern", "search_type"],
+            },
+        },
+    },
 ]
 
 
@@ -87,6 +113,12 @@ def execute_tool(name: str, arguments: dict) -> str:
         return _read_file(arguments["path"])
     elif name == "write_file":
         return _write_file(arguments["path"], arguments["content"])
+    elif name == "search_code":
+        return _search_code(
+            arguments["pattern"],
+            arguments["search_type"],
+            arguments.get("directory", "."),
+        )
     else:
         return f"未知工具: {name}"
 
@@ -149,3 +181,68 @@ def _write_file(path: str, content: str) -> str:
         return f"没有权限写入: {path}"
     except Exception as e:
         return f"写入失败: {e}"
+
+
+def _search_code(pattern: str, search_type: str, directory: str) -> str:
+    """搜索代码：按文件名（glob）或内容（正则）"""
+    import fnmatch
+
+    dir_path = Path(directory).resolve()
+    if not dir_path.exists():
+        return f"目录不存在: {directory}"
+
+    results = []
+    max_results = 30
+
+    try:
+        if search_type == "filename":
+            # 用 glob 匹配文件名
+            for file_path in dir_path.rglob("*"):
+                if file_path.is_file() and not _is_ignored(file_path):
+                    if fnmatch.fnmatch(file_path.name, pattern):
+                        rel = file_path.relative_to(dir_path)
+                        results.append(f"  📄 {rel}")
+                        if len(results) >= max_results:
+                            results.append(f"  ... (结果过多，只显示前 {max_results} 个)")
+                            break
+
+        elif search_type == "content":
+            compiled = re.compile(pattern, re.IGNORECASE)
+            for file_path in dir_path.rglob("*"):
+                if not file_path.is_file() or _is_ignored(file_path):
+                    continue
+                # 跳过二进制和大文件
+                if file_path.suffix in (".pyc", ".exe", ".dll", ".png", ".jpg", ".gif", ".ico"):
+                    continue
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for i, line in enumerate(content.splitlines(), 1):
+                    if compiled.search(line):
+                        rel = file_path.relative_to(dir_path)
+                        results.append(f"  📍 {rel}:{i} | {line.strip()[:120]}")
+                        if len(results) >= max_results:
+                            break
+                if len(results) >= max_results:
+                    results.append(f"  ... (结果过多，只显示前 {max_results} 个)")
+                    break
+
+        if not results:
+            return f"未找到匹配 '{pattern}' 的结果。"
+
+        return f"搜索 '{pattern}' 的结果（共 {min(len(results), max_results)} 条）:\n" + "\n".join(results)
+
+    except re.error as e:
+        return f"正则表达式错误: {e}"
+    except PermissionError:
+        return f"没有权限访问部分目录: {directory}"
+
+
+def _is_ignored(file_path: Path) -> bool:
+    """检查文件是否应该被忽略"""
+    ignore_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", "env", ".idea", ".vscode"}
+    for part in file_path.parts:
+        if part in ignore_dirs:
+            return True
+    return False

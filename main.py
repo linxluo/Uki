@@ -3,17 +3,16 @@ Uki 的入口文件
 
 相当于 Claude Code 的 `claude` 命令。
 运行方式: python main.py
-
-功能: 启动 Uki 的对话循环。Uki 可以自主使用工具完成任务。
 """
 
 from uki.config import Config
 from uki.agent import UkiAgent
+from uki.commands import create_builtin_registry
 
 
 def main():
     print("=" * 50)
-    print("  Uki v0.2")
+    print("  Uki v0.3")
     print("  一个能思考、会动手的日常助手")
     print("=" * 50)
     print()
@@ -27,9 +26,13 @@ def main():
         print("  3. 重新运行 python main.py")
         return
 
+    # 初始化命令系统
+    commands = create_builtin_registry()
+
     uki = UkiAgent()
-    print("Uki 已就绪。试试让 Uki 帮你查看文件、搜索代码。输入 /exit 退出。")
-    print("试试这样说：\"看看当前目录有什么文件\"\n")
+    print("Uki 已就绪。输入 /help 查看可用命令，输入 /exit 退出。")
+    print("试试这样说：\"看看当前目录有什么文件\"")
+    print()
 
     while True:
         try:
@@ -41,19 +44,19 @@ def main():
         if not user_input:
             continue
 
+        # 本地退出命令
         if user_input.lower() in ("/exit", "/quit", "exit", "quit"):
             print("Uki: 再见！有需要随时找我。")
             break
 
-        if user_input.lower() in ("/chat",):
-            # 切换到简单聊天模式（第四课前的方式）
-            print("(切换到简单聊天模式)")
-            reply = uki.chat("和我聊聊吧")
-            print(f"Uki: {reply}")
+        # 先检查是否是本地命令（以 / 开头）
+        cmd = commands.match(user_input)
+        if cmd:
+            print(f"[本地命令] {cmd.run('')}")
             print()
             continue
 
-        # 使用代理循环（第四课的核心）
+        # 不是命令 → 交给 Agent 处理
         uki.run(user_input)
         print()
 
