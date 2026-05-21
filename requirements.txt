@@ -1,0 +1,7 @@
+# UkiAgent 依赖
+
+# LLM 调用（核心依赖）
+openai>=1.0.0
+
+# 环境变量管理
+python-dotenv>=1.0.0
