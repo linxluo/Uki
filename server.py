@@ -89,6 +89,23 @@ async def health():
     return {"status": "ok", "model": Config.model}
 
 
+@app.get("/mode")
+async def get_mode():
+    return {"mode": agent.permission_mode}
+
+
+class ModeRequest(BaseModel):
+    mode: str
+
+
+@app.post("/mode")
+async def set_mode(req: ModeRequest):
+    if req.mode in ("default", "auto", "readonly"):
+        agent.set_mode(req.mode)
+        return {"mode": agent.permission_mode}
+    return {"error": f"未知模式: {req.mode}"}
+
+
 # ============================================================
 # 配置读写
 # ============================================================

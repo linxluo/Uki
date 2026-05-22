@@ -20,9 +20,21 @@
     border-bottom:1px solid #222; background:var(--card); -webkit-app-region:drag;
   }
   header h1 { font-size:16px; color:var(--accent); font-weight:700; }
-  header .right { display:flex; align-items:center; gap:12px; }
+  header .right { display:flex; align-items:center; gap:10px; }
   header .status { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:6px; }
   header .dot { width:6px; height:6px; border-radius:50%; background:var(--reply); }
+
+  /* 模式选择器 */
+  .mode-bar {
+    display:flex; gap:0; background:#0f0f1a; border-radius:8px; overflow:hidden; border:1px solid #2a2a4a;
+  }
+  .mode-btn {
+    padding:5px 12px; font-size:12px; background:none; color:var(--muted);
+    border:none; cursor:pointer; transition:.15s; white-space:nowrap;
+  }
+  .mode-btn:hover { color:#fff; background:#16213e; }
+  .mode-btn.active { color:#fff; background:var(--accent); }
+  .mode-btn:not(:last-child) { border-right:1px solid #2a2a4a; }
   #settingsBtn {
     padding:5px 14px; font-size:13px; background:none; color:var(--muted);
     border:1px solid #333; border-radius:6px; cursor:pointer; transition:.2s;
@@ -119,6 +131,11 @@
 <header>
   <h1>Uki</h1>
   <div class="right">
+    <div class="mode-bar" id="modeBar">
+      <button class="mode-btn active" data-mode="default">默认</button>
+      <button class="mode-btn" data-mode="auto">自动</button>
+      <button class="mode-btn" data-mode="readonly">只读</button>
+    </div>
     <div class="status"><span class="dot"></span><span id="model">连接中...</span></div>
     <button id="settingsBtn" onclick="openSettings()">设置</button>
   </div>
@@ -174,6 +191,34 @@ async function init() {
     document.getElementById("model").textContent = "等待后端...";
     setTimeout(init, 1000);
   }
+  initModeSelector();
+}
+
+// ==================== 模式切换 ====================
+async function initModeSelector() {
+  try {
+    const r = await fetch(API + "/mode");
+    const d = await r.json();
+    setActiveMode(d.mode);
+  } catch(e) {}
+
+  document.querySelectorAll(".mode-btn").forEach(btn => {
+    btn.onclick = async () => {
+      const mode = btn.dataset.mode;
+      await fetch(API + "/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      setActiveMode(mode);
+    };
+  });
+}
+
+function setActiveMode(mode) {
+  document.querySelectorAll(".mode-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
 }
 
 function bubble(text, cls) {
