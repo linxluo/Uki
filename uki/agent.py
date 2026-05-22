@@ -25,12 +25,12 @@ FORCE_TRIM_THRESHOLD = 0
 
 def _assistant_msg(message) -> dict:
     """
-    将 LLM 返回的 message 对象转为 dict。
-    tool_calls 手动构造确保格式正确，扩展字段动态提取。
+    将 LLM 返回的 message 对象转为 API 标准 dict。
+    只保留 API 协议中定义的字段，避免 model_dump 混入 SDK 内部字段。
     """
     msg = {"role": "assistant", "content": message.content}
 
-    # tool_calls 必须手动构造（model_dump 可能产出非 API 标准格式）
+    # tool_calls
     if message.tool_calls:
         msg["tool_calls"] = [
             {
@@ -44,10 +44,10 @@ def _assistant_msg(message) -> dict:
             for tc in message.tool_calls
         ]
 
-    # 扩展字段：从 model_dump 中提取所有不在已知列表中的非空字段
-    known = {"role", "content", "tool_calls", "refusal", "function_call", "audio"}
-    extra = message.model_dump(exclude_none=True, exclude=known)
-    msg.update(extra)
+    # DeepSeek 思考模式需要回传 reasoning_content
+    rc = getattr(message, "reasoning_content", None)
+    if rc:
+        msg["reasoning_content"] = rc
 
     return msg
 
