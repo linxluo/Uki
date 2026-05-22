@@ -47,7 +47,7 @@ def _assistant_msg(message) -> dict:
 
     # 扩展字段：从完整 dump 中提取，不论它在对象的哪个层级
     dumped = message.model_dump(exclude_none=True)
-    for key in ("reasoning_content",):
+    for key in ("reasoning_content", "reasoning"):
         if key in dumped:
             msg[key] = dumped[key]
 
@@ -202,10 +202,6 @@ class UkiAgent:
 
             choice = response.choices[0]
             message = choice.message
-
-            # DEBUG：查看 message 包含哪些字段
-            dumped = message.model_dump(exclude_none=True)
-            display.info(f"[DEBUG] message keys: {list(dumped.keys())}")
 
             # 情况 A：LLM 调用了工具
             if message.tool_calls:
