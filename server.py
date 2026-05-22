@@ -10,6 +10,7 @@ import io
 import queue
 import json
 import re
+import asyncio
 from pathlib import Path
 import threading
 from fastapi import FastAPI
@@ -36,15 +37,11 @@ _confirm_queue: queue.Queue | None = None  # 当前 SSE 输出队列
 def _electron_permission(tool_name: str) -> bool:
     """Electron 模式的权限确认：向 UI 发送确认请求并等待用户响应"""
     global _confirm_result
-    print(f"[PERMISSION] 请求确认: {tool_name}", file=sys.stderr, flush=True)
     if _confirm_queue is not None:
         _confirm_queue.put(("confirm", tool_name))
-        print(f"[PERMISSION] 等待用户响应...", file=sys.stderr, flush=True)
         _confirm_event.wait()
         _confirm_event.clear()
-        print(f"[PERMISSION] 用户响应: {_confirm_result}", file=sys.stderr, flush=True)
         return _confirm_result
-    print(f"[PERMISSION] _confirm_queue 为 None，拒绝", file=sys.stderr, flush=True)
     return False
 
 agent.permission_callback = _electron_permission
@@ -98,7 +95,11 @@ async def chat(req: ChatRequest):
 
     async def generate():
         while True:
-            item = q.get()
+            try:
+                item = q.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
             if item is None:
                 break
             if isinstance(item, tuple) and item[0] == "confirm":
