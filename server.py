@@ -25,8 +25,25 @@ app = FastAPI(title="Uki API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 agent = UkiAgent()
-agent.set_mode("auto")  # Electron 模式默认自动执行
 set_agent_ref(agent)
+
+# Electron 模式下的权限确认
+_confirm_event = threading.Event()
+_confirm_result = False
+_confirm_queue: queue.Queue | None = None  # 当前 SSE 输出队列
+
+
+def _electron_permission(tool_name: str) -> bool:
+    """Electron 模式的权限确认：向 UI 发送确认请求并等待用户响应"""
+    global _confirm_result
+    if _confirm_queue is not None:
+        _confirm_queue.put(("confirm", tool_name))
+        _confirm_event.wait()
+        _confirm_event.clear()
+        return _confirm_result
+    return False
+
+agent.permission_callback = _electron_permission
 
 
 class ChatRequest(BaseModel):
@@ -58,7 +75,9 @@ class _QueueStream:
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """发送消息给 Uki，流式返回 Agent 的思考过程"""
+    global _confirm_queue
     q: queue.Queue = queue.Queue()
+    _confirm_queue = q  # 让 permission_callback 能发确认请求到 SSE 流
 
     def _run():
         old = sys.stdout
@@ -75,11 +94,14 @@ async def chat(req: ChatRequest):
 
     async def generate():
         while True:
-            line = q.get()
-            if line is None:
+            item = q.get()
+            if item is None:
                 break
-            clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
-            yield f"data: {json.dumps(clean, ensure_ascii=False)}\n\n"
+            if isinstance(item, tuple) and item[0] == "confirm":
+                yield f"data: {json.dumps({'type': 'confirm', 'tool': item[1]}, ensure_ascii=False)}\n\n"
+            else:
+                clean = re.sub(r"\x1b\[[0-9;]*m", "", item)
+                yield f"data: {json.dumps(clean, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -98,12 +120,25 @@ class ModeRequest(BaseModel):
     mode: str
 
 
+class ConfirmRequest(BaseModel):
+    approved: bool
+
+
 @app.post("/mode")
 async def set_mode(req: ModeRequest):
     if req.mode in ("default", "auto", "readonly"):
         agent.set_mode(req.mode)
         return {"mode": agent.permission_mode}
     return {"error": f"未知模式: {req.mode}"}
+
+
+@app.post("/confirm")
+async def confirm(req: ConfirmRequest):
+    """用户对权限确认的响应"""
+    global _confirm_result
+    _confirm_result = req.approved
+    _confirm_event.set()
+    return {"status": "ok"}
 
 
 # ============================================================
