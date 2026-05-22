@@ -9,6 +9,7 @@ import sys
 import io
 import queue
 import json
+import re
 import threading
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -73,7 +74,8 @@ async def chat(req: ChatRequest):
             line = q.get()
             if line is None:
                 break
-            yield f"data: {json.dumps(line, ensure_ascii=False)}\n\n"
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
+            yield f"data: {json.dumps(clean, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
