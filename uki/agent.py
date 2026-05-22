@@ -245,10 +245,11 @@ class UkiAgent:
 
                 # 【第十一课】权限检查
                 if not self._check_permission(tool_name):
+                    messages.append(_assistant_msg(message))
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": f"操作被拒绝: {tool_name}（当前权限模式: {self.permission_mode}）",
+                        "content": f"操作被拒绝: {tool_name}（当前权限模式: {self.permission_mode}）。请告知用户并尝试其他方式。",
                     })
                     continue
 
