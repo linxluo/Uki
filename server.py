@@ -10,6 +10,7 @@ import io
 import queue
 import json
 import re
+from pathlib import Path
 import threading
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -83,6 +84,105 @@ async def chat(req: ChatRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": Config.model}
+
+
+# ============================================================
+# 配置读写
+# ============================================================
+
+ENV_PATH = Path(__file__).parent / ".env"
+
+CONFIG_FIELDS = [
+    {"key": "OPENAI_API_KEY",    "label": "API Key",         "type": "password"},
+    {"key": "OPENAI_BASE_URL",   "label": "接口地址",         "type": "text"},
+    {"key": "OPENAI_MODEL",      "label": "模型",            "type": "text"},
+    {"key": "UKI_CONTEXT_WINDOW","label": "上下文窗口(token)", "type": "number"},
+    {"key": "UKI_CONTEXT_MAX",   "label": "推荐上限(token)",  "type": "number"},
+    {"key": "UKI_CONTEXT_TRIM",  "label": "裁剪阈值(token)",  "type": "number"},
+    {"key": "UKI_SUMMARY_THRESHOLD", "label": "总结阈值(token)", "type": "number"},
+]
+
+
+def _mask_key(key: str) -> str:
+    """遮蔽 API key 中间部分：sk-abc...xyz"""
+    if not key or len(key) < 12:
+        return key
+    return key[:6] + "..." + key[-4:]
+
+
+def _read_env() -> dict[str, str]:
+    """读取 .env 文件，返回键值对"""
+    result = {}
+    if ENV_PATH.exists():
+        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                result[k.strip()] = v.strip()
+    return result
+
+
+def _write_env(data: dict[str, str]):
+    """写入 .env 文件，保留原有注释结构"""
+    if ENV_PATH.exists():
+        lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = []
+
+    updated_keys = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=", 1)[0].strip()
+            if k in data:
+                new_lines.append(f"{k}={data[k]}")
+                updated_keys.add(k)
+                continue
+        new_lines.append(line)
+
+    for k, v in data.items():
+        if k not in updated_keys:
+            new_lines.append(f"{k}={v}")
+
+    ENV_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+@app.get("/config")
+async def get_config():
+    """获取当前配置（API key 部分遮蔽）"""
+    env_data = _read_env()
+    fields = []
+    for f in CONFIG_FIELDS:
+        val = env_data.get(f["key"], "")
+        display_val = _mask_key(val) if f["type"] == "password" and val else val
+        fields.append({**f, "value": display_val, "has_value": bool(val)})
+    return {"fields": fields}
+
+
+class SaveConfigRequest(BaseModel):
+    fields: list[dict]
+
+
+@app.post("/config")
+async def save_config(req: SaveConfigRequest):
+    """保存配置。未修改的密码字段不会覆盖原有值。"""
+    env_data = _read_env()
+    updates = {}
+    for f in req.fields:
+        key = f.get("key", "")
+        val = str(f.get("value", "")).strip()
+        if not key:
+            continue
+        # 如果是密码字段且值已被遮蔽（含 ...），则保留原值
+        field_def = next((x for x in CONFIG_FIELDS if x["key"] == key), None)
+        if field_def and field_def["type"] == "password" and "..." in val and key in env_data:
+            continue
+        updates[key] = val
+    _write_env(updates)
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
