@@ -25,12 +25,30 @@ FORCE_TRIM_THRESHOLD = 0
 
 def _assistant_msg(message) -> dict:
     """
-    将 LLM 返回的 message 对象转为 dict，保留所有字段。
-    用 model_dump 而非手动构造，确保未来新模型的扩展字段不丢失。
+    将 LLM 返回的 message 对象转为 dict。
+    tool_calls 手动构造确保格式正确，扩展字段动态提取。
     """
-    # exclude_none 去掉空值，exclude 去掉 SDK 内部字段
-    msg = message.model_dump(exclude_none=True, exclude={"role"})
-    msg["role"] = "assistant"
+    msg = {"role": "assistant", "content": message.content}
+
+    # tool_calls 必须手动构造（model_dump 可能产出非 API 标准格式）
+    if message.tool_calls:
+        msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in message.tool_calls
+        ]
+
+    # 扩展字段：从 model_dump 中提取所有不在已知列表中的非空字段
+    known = {"role", "content", "tool_calls", "refusal", "function_call", "audio"}
+    extra = message.model_dump(exclude_none=True, exclude=known)
+    msg.update(extra)
+
     return msg
 
 # 项目规则文件名（对应 Claude Code 的 CLAUDE.md）
