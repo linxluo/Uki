@@ -16,9 +16,10 @@ from uki.tools import TOOL_DEFINITIONS, execute_tool
 # 最大循环轮数，防止无限循环消耗费用
 MAX_TURNS = 10
 
-# Token 相关（粗略估算：中文约 1 字符≈1 token，英文约 4 字符≈1 token）
-MAX_CONTEXT_TOKENS = 8000   # 当上下文超过此值时触发警告
-TRIM_THRESHOLD = 6000       # 裁剪后保留的 token 数
+# Token 相关阈值（从 Config 动态读取，不再写死）
+# 如果你强制需要一个值，可以写 0 让 Uki 自动匹配模型
+FORCE_MAX_CONTEXT_TOKENS = 0   # 设为 0 则使用 Config 的自动匹配
+FORCE_TRIM_THRESHOLD = 0
 
 # 项目规则文件名（对应 Claude Code 的 CLAUDE.md）
 RULES_FILE = "UKI.md"
@@ -56,15 +57,7 @@ class UkiAgent:
     def _build_system_prompt(self) -> str:
         """构建完整的系统提示词（基础角色 + 项目规则）"""
         base = (
-            "你是 Uki，一个温暖、多变的日常助手。\n\n"
-            "你有能力使用工具来完成用户的请求。面对任务时，按以下方式思考：\n"
-            "1. 理解用户想要什么\n"
-            "2. 如果需要查看文件或执行操作，调用相应的工具\n"
-            "3. 根据工具返回的结果，决定下一步做什么\n"
-            "4. 直到任务完成，给出清晰、友好的总结\n\n"
-            "重要规则：\n"
-            "- 优先使用工具获取真实信息，不要猜测\n"
-            "- 每次只调用一个工具"
+            "你是 Uki，一个温暖、多变的日常助手。"
         )
         return base + self.rules
 
@@ -88,10 +81,12 @@ class UkiAgent:
             turn += 1
 
             # 【第八课】检查上下文用量
+            max_tokens = FORCE_MAX_CONTEXT_TOKENS or Config.max_context_tokens()
+            trim_tokens = FORCE_TRIM_THRESHOLD or Config.trim_threshold()
             token_est = self._estimate_tokens(messages)
-            if token_est > MAX_CONTEXT_TOKENS:
-                print(f"  ⚠️ 上下文接近上限（约 {token_est} tokens），正在自动压缩...")
-                messages = self._trim_context(messages)
+            if token_est > max_tokens:
+                print(f"  ⚠️ 上下文接近推荐上限（约 {token_est}/{max_tokens} tokens），正在自动压缩...")
+                messages = self._trim_context(messages, trim_tokens)
                 print(f"  ✓ 压缩后约 {self._estimate_tokens(messages)} tokens")
 
             print(f"\n--- 第 {turn} 轮 ---")
@@ -160,10 +155,10 @@ class UkiAgent:
         # 这里用折中值：1.5 字符≈1 token
         return int(total / 1.5)
 
-    def _trim_context(self, messages: list) -> list:
+    def _trim_context(self, messages: list, target_tokens: int) -> list:
         """
         裁剪上下文：保留 system prompt 和最近的消息。
-        删除中间轮次的消息，确保总 token 数在阈值以下。
+        删除中间轮次的消息，确保总 token 数在 target_tokens 以下。
         """
         if len(messages) <= 2:
             return messages
@@ -178,7 +173,7 @@ class UkiAgent:
 
         for msg in reversed(rest):
             msg_tokens = len(msg.get("content", "") or "") / 1.5
-            if current_tokens + msg_tokens > TRIM_THRESHOLD:
+            if current_tokens + msg_tokens > target_tokens:
                 break
             kept.insert(0, msg)
             current_tokens += msg_tokens
