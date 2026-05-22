@@ -12,6 +12,7 @@ from pathlib import Path
 from openai import OpenAI
 from uki.config import Config
 from uki.tools import TOOL_DEFINITIONS, execute_tool
+from uki import display
 
 # 最大循环轮数，防止无限循环消耗费用
 MAX_TURNS = 10
@@ -63,15 +64,14 @@ class UkiAgent:
         if tokens < self.summary_threshold:
             return
 
-        print(f"  📝 对话历史达 {tokens} tokens（阈值 {self.summary_threshold}），正在生成摘要...")
+        display.info(f"对话历史达 {tokens} tokens（阈值 {self.summary_threshold}），正在生成摘要...")
         summary = self._summarize_history()
         if summary:
-            # 用摘要替换整段历史
             self.conversation_history = [
                 {"role": "system", "content": f"【对话历史摘要】{summary}"}
             ]
             self.has_recent_summary = True
-            print(f"  ✓ 摘要完成，压缩至约 {self._estimate_tokens(self.conversation_history)} tokens")
+            display.success(f"摘要完成，压缩至约 {self._estimate_tokens(self.conversation_history)} tokens")
 
     def _summarize_history(self) -> str:
         """
@@ -160,11 +160,11 @@ class UkiAgent:
             trim_tokens = FORCE_TRIM_THRESHOLD or Config.trim_threshold()
             token_est = self._estimate_tokens(messages)
             if token_est > max_tokens:
-                print(f"  ⚠️ 上下文接近推荐上限（约 {token_est}/{max_tokens} tokens），正在自动压缩...")
+                display.warning(f"上下文接近推荐上限（约 {token_est}/{max_tokens} tokens），正在自动压缩...")
                 messages = self._trim_context(messages, trim_tokens)
-                print(f"  ✓ 压缩后约 {self._estimate_tokens(messages)} tokens")
+                display.success(f"压缩后约 {self._estimate_tokens(messages)} tokens")
 
-            print(f"\n--- 第 {turn} 轮 ---")
+            display.thinking(turn)
 
             # 让 LLM 思考并决定下一步
             response = self._call_llm(messages)
@@ -178,11 +178,11 @@ class UkiAgent:
                 tool_name = tool_call.function.name
                 tool_args = json.loads(tool_call.function.arguments)
 
-                print(f"  🔧 调用工具: {tool_name}({tool_args})")
+                display.using_tool(tool_name, tool_args)
 
                 # 执行工具
                 result = execute_tool(tool_name, tool_args)
-                print(f"  📋 工具结果: {result[:200]}{'...' if len(result) > 200 else ''}")
+                display.tool_result(result)
 
                 # 把工具的调用和结果都加入消息历史
                 messages.append({
@@ -208,7 +208,7 @@ class UkiAgent:
             # 情况 B：LLM 给出了最终文本回复（无工具调用）
             content = message.content or ""
             if content.strip():
-                print(f"\n  ✨ Uki: {content}")
+                display.agent_reply(content)
                 # 把当前对话保存到跨轮次历史
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": content})
@@ -216,10 +216,10 @@ class UkiAgent:
                 return content
 
             # 情况 C：空回复（不太正常，但可以处理）
-            print("  (Uki 没有进一步的行动或回复)")
+            display.info("Uki 没有进一步的行动或回复")
             break
 
-        print(f"\n  ⚠️ 达到最大轮数（{MAX_TURNS}），Uki 停止了思考。")
+        display.warning(f"达到最大轮数（{MAX_TURNS}），Uki 停止了思考。")
 
     def _estimate_tokens(self, messages: list) -> int:
         """粗略估算当前消息的 token 数"""

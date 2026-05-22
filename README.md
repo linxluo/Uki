@@ -41,7 +41,9 @@ UkiAgent/
 │   ├── config.py       # 配置管理（API key、模型等）
 │   ├── agent.py        # Uki 的核心 Agent 类（代理循环）
 │   ├── tools.py        # 工具集（读文件、列目录、写文件等）
-│   └── commands.py     # 斜杠命令系统（/help, /tools, /config 等）
+│   ├── commands.py     # 斜杠命令系统（/help, /tools, /config 等）
+│   ├── display.py      # 终端输出辅助（颜色、符号、阶段标记）
+│   └── model_fetcher.py # OpenRouter API 拉取模型上下文窗口
 ```
 
 ## 开发日志
