@@ -105,22 +105,39 @@ TOOL_DEFINITIONS = [
 # 工具实现
 # ============================================================
 
+# 统一截断：所有工具返回值不超过此字符数
+TOOL_RESULT_MAX_CHARS = 4000
+
+TRUNCATION_HINTS = {
+    "read_file": "如需继续读取，请用 offset 参数指定起始位置。",
+    "search_code": "如需更多结果，请缩小搜索范围或指定 directory。",
+    "list_files": "如需查看特定类型文件，请用 search_code 搜索。",
+}
+
+
 def execute_tool(name: str, arguments: dict) -> str:
-    """根据工具名和参数执行工具，返回执行结果文本。"""
+    """根据工具名和参数执行工具，返回执行结果文本。所有返回值统一截断。"""
     if name == "list_files":
-        return _list_files(arguments.get("path", "."))
+        raw = _list_files(arguments.get("path", "."))
     elif name == "read_file":
-        return _read_file(arguments["path"])
+        raw = _read_file(arguments["path"])
     elif name == "write_file":
-        return _write_file(arguments["path"], arguments["content"])
+        raw = _write_file(arguments["path"], arguments["content"])
     elif name == "search_code":
-        return _search_code(
+        raw = _search_code(
             arguments["pattern"],
             arguments["search_type"],
             arguments.get("directory", "."),
         )
     else:
         return f"未知工具: {name}"
+
+    # 统一截断
+    if len(raw) > TOOL_RESULT_MAX_CHARS:
+        hint = TRUNCATION_HINTS.get(name, "如需完整内容，请调整查询参数。")
+        raw = raw[:TOOL_RESULT_MAX_CHARS] + f"\n\n...（内容过长，已截断至 {TOOL_RESULT_MAX_CHARS} 字符。{hint}）"
+
+    return raw
 
 
 def _list_files(path: str) -> str:
@@ -155,20 +172,12 @@ def _read_file(path: str) -> str:
 
     try:
         content = abs_path.read_text(encoding="utf-8")
+        lines_count = content.count("\n")
+        return f"文件 {abs_path} 的内容（共 {lines_count} 行）:\n\n{content}"
     except UnicodeDecodeError:
         return f"无法以 UTF-8 读取文件（可能是二进制文件）: {path}"
     except PermissionError:
         return f"没有权限读取: {path}"
-
-    # 限制输出长度，避免撑爆上下文
-    max_chars = 5000
-    if len(content) > max_chars:
-        content = content[:max_chars] + "\n\n... (内容过长，已截断，剩余部分请用 offset 参数读取)"
-        lines_count = content.count("\n")
-        return f"文件 {abs_path} 的内容（共 {lines_count}+ 行，已截断至 {max_chars} 字符）:\n\n{content}"
-
-    lines_count = content.count("\n")
-    return f"文件 {abs_path} 的内容（共 {lines_count} 行）:\n\n{content}"
 
 
 def _write_file(path: str, content: str) -> str:
