@@ -1,152 +1,162 @@
 """
-Uki 桌面窗口
+Uki 桌面窗口 (Tkinter 暗色主题)
 
-基于 Tkinter 的轻量 GUI，替代命令行交互。
-运行方式: python gui.py
+零额外依赖，纯 Python 自带 Tkinter 实现的深色 GUI。
+运行: python gui.py
 """
 
 import sys
 import queue
 import threading
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 
 from uki.agent import UkiAgent
 from uki.config import Config
 
 
-class _QueueStream:
-    """自定义输出流，将 print 内容逐行推入队列"""
+# 颜色主题
+BG      = "#1a1a2e"
+BG_INPUT = "#16213e"
+BG_BTN  = "#0f3460"
+FG      = "#e0e0e0"
+FG_DIM  = "#8888aa"
+ACCENT  = "#e94560"
+FONT    = ("Segoe UI", 11)
+FONT_SM = ("Segoe UI", 10)
+FONT_TITLE = ("Segoe UI", 16, "bold")
 
+
+class _QueueStream:
     def __init__(self, q: queue.Queue):
         self.q = q
-        self._buffer = ""
+        self._buf = ""
 
     def write(self, text: str):
-        self._buffer += text
-        if "\n" in self._buffer:
-            lines = self._buffer.split("\n")
-            self._buffer = lines.pop()
+        self._buf += text
+        if "\n" in self._buf:
+            lines = self._buf.split("\n")
+            self._buf = lines.pop()
             for line in lines:
                 if line.strip():
-                    self.q.put(line)
+                    self.q.put(line.strip())
 
     def flush(self):
-        if self._buffer.strip():
-            self.q.put(self._buffer)
-            self._buffer = ""
+        if self._buf.strip():
+            self.q.put(self._buf)
+            self._buf = ""
 
 
 class UkiGUI:
     def __init__(self):
         self.agent = UkiAgent()
         self.output_queue = queue.Queue()
+        self._running = False
         self._setup_ui()
         self._poll_queue()
 
     def _setup_ui(self):
         self.root = tk.Tk()
         self.root.title("Uki")
-        self.root.geometry("750x550")
-        self.root.configure(bg="#1e1e1e")
+        self.root.geometry("820x600")
+        self.root.minsize(500, 400)
+        self.root.configure(bg=BG)
+
+        # 顶部
+        top = tk.Frame(self.root, bg=BG)
+        top.pack(fill="x", padx=20, pady=(14, 0))
+
+        tk.Label(top, text="Uki", font=FONT_TITLE, fg=ACCENT, bg=BG).pack(side="left")
+        tk.Label(top, text=Config.model, font=FONT_SM, fg=FG_DIM, bg=BG).pack(side="right")
 
         # 输出区域
         self.output = scrolledtext.ScrolledText(
-            self.root,
-            state="disabled",
-            wrap=tk.WORD,
-            bg="#1e1e1e",
-            fg="#d4d4d4",
-            insertbackground="white",
-            font=("Consolas", 11),
+            self.root, wrap="word", font=FONT,
+            bg=BG, fg=FG, insertbackground=FG,
+            relief="flat", borderwidth=0,
+            padx=12, pady=12,
+            highlightthickness=0,
         )
-        self.output.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+        self.output.pack(fill="both", expand=True, padx=20, pady=(10, 0))
+        self.output.configure(state="disabled")
 
-        # 输入区域
-        input_frame = tk.Frame(self.root, bg="#1e1e1e")
+        # 输入栏
+        bar = tk.Frame(self.root, bg=BG)
+        bar.pack(fill="x", padx=20, pady=(10, 16))
+
         self.entry = tk.Entry(
-            input_frame,
-            bg="#2d2d2d",
-            fg="#d4d4d4",
-            insertbackground="white",
-            font=("Consolas", 11),
-            relief=tk.FLAT,
+            bar, font=FONT,
+            bg=BG_INPUT, fg=FG, insertbackground=FG,
+            relief="flat", highlightthickness=0,
         )
-        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        self.entry.pack(side="left", fill="x", expand=True, ipady=6)
         self.entry.bind("<Return>", self._send)
-
-        send_btn = tk.Button(
-            input_frame,
-            text="发送",
-            command=self._send,
-            bg="#007acc",
-            fg="white",
-            relief=tk.FLAT,
-            font=("Microsoft YaHei", 10),
-            padx=12,
-        )
-        send_btn.pack(side=tk.RIGHT)
-        input_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
-
         self.entry.focus_set()
 
-        # 启动提示
-        self._append("Uki v0.4 — 一个多变的日常助手\n")
-        self._append("输入消息开始聊天，输入 /exit 关闭\n\n")
+        self.btn = tk.Button(
+            bar, text="发送", command=self._send,
+            bg=ACCENT, fg="white", font=FONT,
+            relief="flat", padx=20, pady=4,
+            activebackground="#ff6b81", activeforeground="white",
+            cursor="hand2",
+        )
+        self.btn.pack(side="right", padx=(10, 0))
+
+        # 启动问候
+        self._append("Uki 已就绪。\n\n")
 
     def _send(self, event=None):
+        if self._running:
+            return
         msg = self.entry.get().strip()
         if not msg:
             return
-        self.entry.delete(0, tk.END)
+        self.entry.delete(0, "end")
 
-        if msg.lower() in ("/exit", "/quit", "exit", "quit"):
-            self._append("再见！\n")
-            self.root.after(500, self.root.destroy)
+        if msg.lower() in ("/exit", "/quit"):
+            self.root.after(200, self.root.destroy)
             return
 
         if msg.lower().startswith("/clear"):
             self.agent.clear_history()
-            self._append("[会话已清除]\n\n")
+            self._append("─" * 40 + "\n[会话已清除]\n\n")
             return
 
         self._append(f"▸ 你: {msg}\n")
-
-        # 在后台线程中运行 Agent
-        t = threading.Thread(target=self._run_agent, args=(msg,), daemon=True)
-        t.start()
+        self._running = True
+        self.btn.configure(state="disabled", text="…")
+        threading.Thread(target=self._run_agent, args=(msg,), daemon=True).start()
 
     def _run_agent(self, msg):
-        """在后台线程执行 Agent，输出重定向到队列"""
-        old_stdout = sys.stdout
+        old = sys.stdout
         sys.stdout = _QueueStream(self.output_queue)
         try:
             self.agent.run(msg)
         except Exception as e:
             self.output_queue.put(f"[错误] {e}")
         finally:
-            sys.stdout = old_stdout
-            self.output_queue.put(None)  # 结束标记
+            sys.stdout = old
+            self.output_queue.put(None)
 
     def _poll_queue(self):
-        """主线程定时检查队列，更新 UI"""
         try:
             while True:
                 line = self.output_queue.get_nowait()
                 if line is None:
                     self._append("\n")
-                    self.entry.configure(state="normal")
+                    self._running = False
+                    self.btn.configure(state="normal", text="发送")
                     self.entry.focus_set()
                     return
                 self._append(f"{line}\n")
         except queue.Empty:
             pass
-        self.root.after(100, self._poll_queue)
+        self.root.after(80, self._poll_queue)
 
     def _append(self, text: str):
         self.output.configure(state="normal")
-        self.output.insert(tk.END, text)
-        self.output.see(tk.END)
+        self.output.insert("end", text)
+        self.output.see("end")
         self.output.configure(state="disabled")
 
     def run(self):
