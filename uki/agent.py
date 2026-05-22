@@ -217,11 +217,6 @@ class UkiAgent:
                     "tool_call_id": tool_call.id,
                     "content": result,
                 })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                })
                 # 继续循环，让 LLM 在工具结果的基础上再思考
                 continue
 
