@@ -70,10 +70,44 @@ class UkiAgent:
         self.summary_threshold = Config.summary_threshold()  # 触发总结的 token 阈值
         self.has_recent_summary = False  # 防止连续两轮重复总结
 
+        # 【第十一课】权限控制
+        self.permission_mode = "default"  # default | auto | readonly
+        self.permission_callback = None   # 外部注入的确认回调
+
     def clear_history(self):
         """清除跨轮次对话历史"""
         self.conversation_history = []
         self.has_recent_summary = False
+
+    # ================================================================
+    # 权限控制（第十一课）
+    # ================================================================
+
+    WRITE_TOOLS = {"write_file"}
+
+    def set_mode(self, mode: str):
+        """切换权限模式：default / auto / readonly"""
+        if mode in ("default", "auto", "readonly"):
+            self.permission_mode = mode
+
+    def _check_permission(self, tool_name: str) -> bool:
+        """检查是否允许执行此工具"""
+        is_write = tool_name in self.WRITE_TOOLS
+
+        if self.permission_mode == "auto":
+            return True
+
+        if self.permission_mode == "readonly" and is_write:
+            display.warning(f"只读模式下拒绝写入操作: {tool_name}")
+            return False
+
+        if self.permission_mode == "default" and is_write:
+            if self.permission_callback:
+                return self.permission_callback(tool_name)
+            display.warning(f"默认模式下无确认回调，拒绝写入: {tool_name}")
+            return False
+
+        return True
 
     # ================================================================
     # LLM 自动总结（第八课核心功能）
@@ -208,6 +242,15 @@ class UkiAgent:
                 tool_args = json.loads(tool_call.function.arguments)
 
                 display.using_tool(tool_name, tool_args)
+
+                # 【第十一课】权限检查
+                if not self._check_permission(tool_name):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": f"操作被拒绝: {tool_name}（当前权限模式: {self.permission_mode}）",
+                    })
+                    continue
 
                 # 执行工具
                 result = execute_tool(tool_name, tool_args)

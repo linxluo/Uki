@@ -124,6 +124,75 @@ def _cmd_context(args: str) -> str:
     )
 
 
+def _cmd_init(args: str) -> str:
+    """/init 命令：初始化项目规则文件（对应 Claude Code 的 /init）"""
+    from pathlib import Path
+    root = Path(".")
+    created = []
+    uki_md = root / "UKI.md"
+    if not uki_md.exists():
+        uki_md.write_text("""# Uki 的项目规则
+
+> 这个文件会被 Uki 在每次对话中自动读取。
+
+## 沟通风格
+- 用中文回复
+- 语气温暖、简洁
+
+## 工作习惯
+- 操作文件前先列出目录了解环境
+- 修改文件前先读取原文件内容
+- 优先使用工具获取真实信息，不要猜测
+- 每次只调用一个工具
+
+## 技术约定
+- （这里可以写代码风格、命名规范等）
+
+## 个人偏好
+- （这里可以写任何想让 Uki 记住的偏好）
+""", encoding="utf-8")
+        created.append("UKI.md（项目规则）")
+    env_example = root / ".env.example"
+    if not env_example.exists():
+        env_example.write_text("""OPENAI_API_KEY=sk-your-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
+""", encoding="utf-8")
+        created.append(".env.example（API 配置模板）")
+    if created:
+        return "已创建：\n" + "\n".join(f"  ✓ {c}" for c in created) + "\n\n请编辑这些文件后重启 Uki。"
+    return "UKI.md 和 .env.example 已存在，无需初始化。"
+
+
+# /mode 命令需要访问 agent 实例，通过模块级变量注入
+_agent_ref = None
+
+def set_agent_ref(agent):
+    global _agent_ref
+    _agent_ref = agent
+
+def _cmd_mode(args: str) -> str:
+    """/mode 命令：查看或切换权限模式"""
+    if not _agent_ref:
+        return "无法访问 Agent 实例。"
+    arg = args.strip().lower()
+    if arg in ("default", "auto", "readonly"):
+        _agent_ref.set_mode(arg)
+        return f"权限模式已切换为: {arg}"
+    modes = {
+        "default": "默认模式 — 写入文件前需确认",
+        "auto": "自动模式 — 所有操作直接执行",
+        "readonly": "只读模式 — 可以读、搜、列，不能写文件",
+    }
+    current = _agent_ref.permission_mode
+    lines = [f"当前模式: {current}"]
+    for m, desc in modes.items():
+        marker = " ← 当前" if m == current else ""
+        lines.append(f"  {m:10} {desc}{marker}")
+    lines.append("\n切换: /mode auto | /mode default | /mode readonly")
+    return "\n".join(lines)
+
+
 def create_builtin_registry() -> CommandRegistry:
     """创建并返回预装内置命令的注册表"""
     registry = CommandRegistry()
@@ -135,6 +204,8 @@ def create_builtin_registry() -> CommandRegistry:
     registry.register("/clear", "清除对话历史", _cmd_clear)
     registry.register("/compact", "压缩上下文以节省 token", _cmd_compact)
     registry.register("/context", "查看当前上下文用量说明", _cmd_context)
+    registry.register("/init", "初始化项目规则文件（UKI.md 和 .env.example）", _cmd_init)
+    registry.register("/mode", "查看或切换权限模式（default/auto/readonly）", _cmd_mode)
 
     # 让 /help 处理器能访问注册表
     import types

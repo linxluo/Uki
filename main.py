@@ -7,7 +7,7 @@ Uki 的入口文件
 
 from uki.config import Config
 from uki.agent import UkiAgent
-from uki.commands import create_builtin_registry
+from uki.commands import create_builtin_registry, set_agent_ref
 from uki import display
 
 
@@ -29,6 +29,13 @@ def main():
 
     commands = create_builtin_registry()
     uki = UkiAgent()
+    set_agent_ref(uki)
+
+    # CLI 模式的权限确认回调
+    def cli_permission(tool_name):
+        ans = input(f"  ⚡ 确认执行 {tool_name}？[y/N] ").strip().lower()
+        return ans == "y"
+    uki.permission_callback = cli_permission
 
     display.success("Uki 已就绪。输入 /help 查看可用命令，输入 /exit 退出。")
     display.info("试试这样说：\"看看当前目录有什么文件\"")

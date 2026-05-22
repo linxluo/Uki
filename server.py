@@ -19,11 +19,14 @@ from pydantic import BaseModel
 
 from uki.agent import UkiAgent
 from uki.config import Config
+from uki.commands import set_agent_ref
 
 app = FastAPI(title="Uki API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 agent = UkiAgent()
+agent.set_mode("auto")  # Electron 模式默认自动执行
+set_agent_ref(agent)
 
 
 class ChatRequest(BaseModel):
