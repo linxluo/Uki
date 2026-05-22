@@ -24,8 +24,29 @@ FORCE_TRIM_THRESHOLD = 0
 
 
 def _assistant_msg(message) -> dict:
-    """将 message 对象转为 dict。model_dump 保留所有字段，和 SDK 序列化一致。"""
-    return message.model_dump(exclude_none=True)
+    """手动构造 API 标准格式的 assistant 消息。只从 model_dump 提取 reasoning。"""
+    msg = {"role": "assistant", "content": message.content}
+
+    if message.tool_calls:
+        msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in message.tool_calls
+        ]
+
+    # 从 model_dump 提取 reasoning（可能是 reasoning 或 reasoning_content）
+    dumped = message.model_dump(exclude_none=True)
+    for key in ("reasoning", "reasoning_content"):
+        if key in dumped:
+            msg[key] = dumped[key]
+
+    return msg
 
 # 项目规则文件名（对应 Claude Code 的 CLAUDE.md）
 RULES_FILE = "UKI.md"
