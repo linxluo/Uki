@@ -26,11 +26,12 @@ FORCE_TRIM_THRESHOLD = 0
 def _assistant_msg(message) -> dict:
     """
     将 LLM 返回的 message 对象转为 API 标准 dict。
-    只保留 API 协议中定义的字段，避免 model_dump 混入 SDK 内部字段。
+    content 和 tool_calls 手动构造确保格式正确。
+    扩展字段从 model_dump 中提取（不直接写入 messages 避免污染）。
     """
     msg = {"role": "assistant", "content": message.content}
 
-    # tool_calls
+    # tool_calls 手动构造（API 标准格式）
     if message.tool_calls:
         msg["tool_calls"] = [
             {
@@ -44,10 +45,11 @@ def _assistant_msg(message) -> dict:
             for tc in message.tool_calls
         ]
 
-    # DeepSeek 思考模式需要回传 reasoning_content
-    rc = getattr(message, "reasoning_content", None)
-    if rc:
-        msg["reasoning_content"] = rc
+    # 扩展字段：从完整 dump 中提取，不论它在对象的哪个层级
+    dumped = message.model_dump(exclude_none=True)
+    for key in ("reasoning_content",):
+        if key in dumped:
+            msg[key] = dumped[key]
 
     return msg
 
@@ -200,6 +202,10 @@ class UkiAgent:
 
             choice = response.choices[0]
             message = choice.message
+
+            # DEBUG：查看 message 包含哪些字段
+            dumped = message.model_dump(exclude_none=True)
+            display.info(f"[DEBUG] message keys: {list(dumped.keys())}")
 
             # 情况 A：LLM 调用了工具
             if message.tool_calls:
