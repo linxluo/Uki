@@ -22,6 +22,17 @@ MAX_TURNS = 10
 FORCE_MAX_CONTEXT_TOKENS = 0   # 设为 0 则使用 Config 的自动匹配
 FORCE_TRIM_THRESHOLD = 0
 
+
+def _assistant_msg(message) -> dict:
+    """
+    将 LLM 返回的 message 对象转为 dict，保留所有字段。
+    用 model_dump 而非手动构造，确保未来新模型的扩展字段不丢失。
+    """
+    # exclude_none 去掉空值，exclude 去掉 SDK 内部字段
+    msg = message.model_dump(exclude_none=True, exclude={"role"})
+    msg["role"] = "assistant"
+    return msg
+
 # 项目规则文件名（对应 Claude Code 的 CLAUDE.md）
 RULES_FILE = "UKI.md"
 
@@ -185,17 +196,11 @@ class UkiAgent:
                 display.tool_result(result)
 
                 # 把工具的调用和结果都加入消息历史
+                messages.append(_assistant_msg(message))
                 messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }],
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
                 })
                 messages.append({
                     "role": "tool",
