@@ -24,34 +24,8 @@ FORCE_TRIM_THRESHOLD = 0
 
 
 def _assistant_msg(message) -> dict:
-    """
-    将 LLM 返回的 message 对象转为 API 标准 dict。
-    content 和 tool_calls 手动构造确保格式正确。
-    扩展字段从 model_dump 中提取（不直接写入 messages 避免污染）。
-    """
-    msg = {"role": "assistant", "content": message.content}
-
-    # tool_calls 手动构造（API 标准格式）
-    if message.tool_calls:
-        msg["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                },
-            }
-            for tc in message.tool_calls
-        ]
-
-    # 扩展字段：从完整 dump 中提取，不论它在对象的哪个层级
-    dumped = message.model_dump(exclude_none=True)
-    for key in ("reasoning_content", "reasoning"):
-        if key in dumped:
-            msg[key] = dumped[key]
-
-    return msg
+    """将 message 对象转为 dict。model_dump 保留所有字段，和 SDK 序列化一致。"""
+    return message.model_dump(exclude_none=True)
 
 # 项目规则文件名（对应 Claude Code 的 CLAUDE.md）
 RULES_FILE = "UKI.md"
@@ -247,13 +221,14 @@ class UkiAgent:
         display.warning(f"达到最大轮数（{MAX_TURNS}），Uki 停止了思考。")
 
     def _estimate_tokens(self, messages: list) -> int:
-        """粗略估算当前消息的 token 数"""
+        """粗略估算当前消息的 token 数。兼容 dict 和 Pydantic 对象。"""
         total = 0
         for msg in messages:
-            content = msg.get("content", "") or ""
+            try:
+                content = msg.get("content", "") or ""
+            except AttributeError:
+                content = getattr(msg, "content", None) or ""
             total += len(content)
-        # 中文约 1 字符≈1.3 token，英文约 3 字符≈1 token
-        # 这里用折中值：1.5 字符≈1 token
         return int(total / 1.5)
 
     def _trim_context(self, messages: list, target_tokens: int) -> list:
@@ -273,7 +248,11 @@ class UkiAgent:
         current_tokens = self._estimate_tokens([system_msg])
 
         for msg in reversed(rest):
-            msg_tokens = len(msg.get("content", "") or "") / 1.5
+            try:
+                msg_len = len(msg.get("content", "") or "")
+            except AttributeError:
+                msg_len = len(getattr(msg, "content", None) or "")
+            msg_tokens = msg_len / 1.5
             if current_tokens + msg_tokens > target_tokens:
                 break
             kept.insert(0, msg)
@@ -293,13 +272,12 @@ class UkiAgent:
     # ================================================================
 
     def _call_llm(self, messages: list):
-        """调用 LLM，开启工具调用能力。关闭思考模式以避免 tool_calls 兼容问题。"""
+        """调用 LLM，开启工具调用能力。"""
         return self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=TOOL_DEFINITIONS,
             tool_choice="auto",
-            extra_body={"thinking": {"type": "disabled"}},
         )
 
     # ================================================================
