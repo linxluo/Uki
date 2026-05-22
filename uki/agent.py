@@ -89,7 +89,7 @@ class UkiAgent:
         history_text = "\n".join(lines)
 
         summary_prompt = (
-            "请将以下对话历史总结为一段中文摘要（200 字以内）。\n\n"
+            "请将以下对话历史总结为一段中文摘要（500 字以内）。\n\n"
             "必须保留这些信息：\n"
             "  - 用户的核心需求和目标\n"
             "  - 已经做出的重要决策\n"
@@ -106,7 +106,7 @@ class UkiAgent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": summary_prompt}],
-                max_tokens=500,
+                max_tokens=800,
             )
             return response.choices[0].message.content or ""
         except Exception as e:
