@@ -22,7 +22,12 @@ Thumbs.db
 # Uki 模型缓存
 uki_model_cache.json
 
+# 杂项
+python
+python.exe
+
 # Electron / Node
 node_modules/
 dist/
 out/
+package-lock.json
