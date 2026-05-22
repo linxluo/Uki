@@ -132,9 +132,9 @@
   <h1>Uki</h1>
   <div class="right">
     <div class="mode-bar" id="modeBar">
-      <button class="mode-btn active" data-mode="default">默认</button>
-      <button class="mode-btn" data-mode="auto">自动</button>
-      <button class="mode-btn" data-mode="readonly">只读</button>
+      <button class="mode-btn active" data-mode="default" title="写入文件前弹确认">默认</button>
+      <button class="mode-btn" data-mode="auto" title="所有操作直接执行，不询问">自动</button>
+      <button class="mode-btn" data-mode="readonly" title="可以读、搜、列，不能写文件">只读</button>
     </div>
     <div class="status"><span class="dot"></span><span id="model">连接中...</span></div>
     <button id="settingsBtn" onclick="openSettings()">设置</button>
