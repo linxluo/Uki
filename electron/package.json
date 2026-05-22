@@ -1,0 +1,13 @@
+{
+  "name": "uki-desktop",
+  "version": "1.0.0",
+  "description": "Uki 桌面应用",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0"
+  }
+}

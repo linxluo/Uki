@@ -21,3 +21,8 @@ Thumbs.db
 
 # Uki 模型缓存
 uki_model_cache.json
+
+# Electron / Node
+node_modules/
+dist/
+out/
