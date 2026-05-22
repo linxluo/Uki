@@ -293,12 +293,13 @@ class UkiAgent:
     # ================================================================
 
     def _call_llm(self, messages: list):
-        """调用 LLM，开启工具调用能力"""
+        """调用 LLM，开启工具调用能力。关闭思考模式以避免 tool_calls 兼容问题。"""
         return self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=TOOL_DEFINITIONS,
-            tool_choice="auto",  # LLM 自己决定要不要用工具
+            tool_choice="auto",
+            extra_body={"thinking": {"type": "disabled"}},
         )
 
     # ================================================================
