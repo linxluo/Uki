@@ -24,7 +24,11 @@ FORCE_TRIM_THRESHOLD = 0
 
 
 def _assistant_msg(message) -> dict:
-    """手动构造 API 标准格式的 assistant 消息。只从 model_dump 提取 reasoning。"""
+    """
+    手动构造 API 标准格式的 assistant 消息。
+    content 和 tool_calls 手动构造确保格式正确。
+    其余所有未知扩展字段从 model_dump 提取，确保模型升级后不丢字段。
+    """
     msg = {"role": "assistant", "content": message.content}
 
     if message.tool_calls:
@@ -40,11 +44,10 @@ def _assistant_msg(message) -> dict:
             for tc in message.tool_calls
         ]
 
-    # 从 model_dump 提取 reasoning（可能是 reasoning 或 reasoning_content）
-    dumped = message.model_dump(exclude_none=True)
-    for key in ("reasoning", "reasoning_content"):
-        if key in dumped:
-            msg[key] = dumped[key]
+    # 从 model_dump 提取所有不在已知列表中的字段
+    known = {"role", "content", "tool_calls", "refusal", "function_call", "audio"}
+    dumped = message.model_dump(exclude_none=True, exclude=known)
+    msg.update(dumped)
 
     return msg
 
