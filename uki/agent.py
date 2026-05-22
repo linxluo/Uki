@@ -37,10 +37,81 @@ class UkiAgent:
         self.rules = self._load_rules()
         self.system_prompt = self._build_system_prompt()
         self.conversation_history: list[dict] = []  # 跨轮次对话历史
+        self.summary_threshold = Config.summary_threshold()  # 触发总结的 token 阈值
+        self.has_recent_summary = False  # 防止连续两轮重复总结
 
     def clear_history(self):
         """清除跨轮次对话历史"""
         self.conversation_history = []
+        self.has_recent_summary = False
+
+    # ================================================================
+    # LLM 自动总结（第八课核心功能）
+    # ================================================================
+
+    def _maybe_summarize(self):
+        """
+        检查对话历史是否需要总结。
+        条件：历史 token 数超过阈值，且上一轮没有刚刚总结过。
+        """
+        if not self.conversation_history:
+            return
+        if self.has_recent_summary:
+            return
+
+        tokens = self._estimate_tokens(self.conversation_history)
+        if tokens < self.summary_threshold:
+            return
+
+        print(f"  📝 对话历史达 {tokens} tokens（阈值 {self.summary_threshold}），正在生成摘要...")
+        summary = self._summarize_history()
+        if summary:
+            # 用摘要替换整段历史
+            self.conversation_history = [
+                {"role": "system", "content": f"【对话历史摘要】{summary}"}
+            ]
+            self.has_recent_summary = True
+            print(f"  ✓ 摘要完成，压缩至约 {self._estimate_tokens(self.conversation_history)} tokens")
+
+    def _summarize_history(self) -> str:
+        """
+        调 LLM 对 conversation_history 做语义摘要。
+        要求保留：用户的核心需求、已做的决策、未解决的问题、关键约束。
+        丢弃：重复的迭代过程、工具调用的中间细节。
+        """
+        # 把历史拼成文本
+        lines = []
+        for msg in self.conversation_history:
+            role = "用户" if msg["role"] == "user" else "Uki"
+            content = msg.get("content", "") or ""
+            if content.strip():
+                lines.append(f"{role}: {content}")
+        history_text = "\n".join(lines)
+
+        summary_prompt = (
+            "请将以下对话历史总结为一段中文摘要（200 字以内）。\n\n"
+            "必须保留这些信息：\n"
+            "  - 用户的核心需求和目标\n"
+            "  - 已经做出的重要决策\n"
+            "  - 尚未解决的问题\n"
+            "  - 用户明确提出的约束或偏好\n\n"
+            "可以丢弃这些信息：\n"
+            "  - 重复的迭代和微调过程\n"
+            "  - 工具调用的中间细节\n"
+            "  - 寒暄和无关话题\n\n"
+            f"=== 对话历史 ===\n{history_text}\n=== 结束 ==="
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": summary_prompt}],
+                max_tokens=500,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            print(f"  ⚠️ 摘要生成失败: {e}")
+            return ""
 
     def _load_rules(self) -> str:
         """读取项目规则文件 UKI.md（对应 Claude Code 的 CLAUDE.md）"""
@@ -73,6 +144,10 @@ class UkiAgent:
         """
         # 消息历史：system prompt + 之前的对话历史 + 当前用户消息
         messages = [{"role": "system", "content": self.system_prompt}]
+
+        # 【第八课】LLM 自动总结：对话历史过长时先压缩再发给 LLM
+        self._maybe_summarize()
+
         messages.extend(self.conversation_history)
         messages.append({"role": "user", "content": user_message})
 
@@ -137,6 +212,7 @@ class UkiAgent:
                 # 把当前对话保存到跨轮次历史
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": content})
+                self.has_recent_summary = False  # 新一轮对话了，允许再次总结
                 return content
 
             # 情况 C：空回复（不太正常，但可以处理）
