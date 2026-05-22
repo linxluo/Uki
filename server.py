@@ -36,11 +36,15 @@ _confirm_queue: queue.Queue | None = None  # 当前 SSE 输出队列
 def _electron_permission(tool_name: str) -> bool:
     """Electron 模式的权限确认：向 UI 发送确认请求并等待用户响应"""
     global _confirm_result
+    print(f"[PERMISSION] 请求确认: {tool_name}", file=sys.stderr, flush=True)
     if _confirm_queue is not None:
         _confirm_queue.put(("confirm", tool_name))
+        print(f"[PERMISSION] 等待用户响应...", file=sys.stderr, flush=True)
         _confirm_event.wait()
         _confirm_event.clear()
+        print(f"[PERMISSION] 用户响应: {_confirm_result}", file=sys.stderr, flush=True)
         return _confirm_result
+    print(f"[PERMISSION] _confirm_queue 为 None，拒绝", file=sys.stderr, flush=True)
     return False
 
 agent.permission_callback = _electron_permission
