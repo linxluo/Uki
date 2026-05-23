@@ -104,6 +104,11 @@ class Config:
         return cls._match_model_config()["summary"]
 
     @classmethod
+    def git_context_enabled(cls) -> bool:
+        """是否在 system prompt 中注入 Git 状态（通过 UKI_GIT_CONTEXT=1 开启）"""
+        return os.getenv("UKI_GIT_CONTEXT", "0") == "1"
+
+    @classmethod
     def summary(cls) -> str:
         """打印当前配置摘要"""
         key_status = "已配置 ✓" if cls.is_ready() else "未配置 ✗（请复制 .env.example 为 .env 并填 API key）"

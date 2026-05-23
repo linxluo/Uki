@@ -13,6 +13,7 @@ from openai import OpenAI
 from uki.config import Config
 from uki.tools import TOOL_DEFINITIONS, execute_tool
 from uki import display
+from uki.git_helper import get_summary
 
 # 最大循环轮数，防止无限循环消耗费用
 MAX_TURNS = 10
@@ -189,11 +190,20 @@ class UkiAgent:
         return ""
 
     def _build_system_prompt(self) -> str:
-        """构建完整的系统提示词（基础角色 + 项目规则）"""
+        """构建完整的系统提示词（基础角色 + Git 状态 + 项目规则）"""
         base = (
             "你是 Uki，一个温暖、多变的日常助手。"
         )
-        return base + self.rules
+        # Git 状态仅在开发模式下注入（通过 UKI_GIT_CONTEXT=1 控制）
+        if Config.git_context_enabled():
+            git_status = get_summary()
+            if git_status:
+                git_block = f"\n\n## Git 状态\n{git_status}"
+            else:
+                git_block = ""
+        else:
+            git_block = ""
+        return base + git_block + self.rules
 
     # ================================================================
     # 核心循环（这是第四课最重要的代码）
