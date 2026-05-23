@@ -147,6 +147,41 @@ async def confirm(req: ConfirmRequest):
 
 
 # ============================================================
+# MCP 管理
+# ============================================================
+
+@app.get("/mcp")
+async def get_mcp_tools():
+    """获取当前所有 MCP 工具"""
+    servers_info = []
+    for srv in agent.mcp.servers:
+        tools = [t["function"]["name"] for t in srv.tools]
+        servers_info.append({"name": srv.name, "tools": tools})
+    return {"servers": servers_info}
+
+
+@app.get("/mcp-config")
+async def get_mcp_config():
+    """读取 MCP 配置文件内容"""
+    config_path = Path(".uki_mcp.json")
+    if config_path.exists():
+        return {"content": config_path.read_text(encoding="utf-8")}
+    return {"content": '{\n  "servers": []\n}'}
+
+
+class MCPConfigRequest(BaseModel):
+    content: str
+
+
+@app.post("/mcp-config")
+async def save_mcp_config(req: MCPConfigRequest):
+    """保存 MCP 配置文件（需要重启生效）"""
+    config_path = Path(".uki_mcp.json")
+    config_path.write_text(req.content, encoding="utf-8")
+    return {"status": "ok"}
+
+
+# ============================================================
 # 配置读写
 # ============================================================
 

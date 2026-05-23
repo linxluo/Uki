@@ -12,6 +12,7 @@ from pathlib import Path
 from openai import OpenAI
 from uki.config import Config
 from uki.tools import TOOL_DEFINITIONS, execute_tool
+from uki.mcp_client import MCPManager
 from uki import display
 from uki.git_helper import get_summary
 
@@ -70,6 +71,19 @@ class UkiAgent:
         self.conversation_history: list[dict] = []  # 跨轮次对话历史
         self.summary_threshold = Config.summary_threshold()  # 触发总结的 token 阈值
         self.has_recent_summary = False  # 防止连续两轮重复总结
+
+        # 【第十三课】MCP 外部工具
+        self.mcp = MCPManager()
+
+        # 合并内置工具和外部工具定义
+        self.all_tools = list(TOOL_DEFINITIONS) + self.mcp.get_definitions()
+
+        # 诊断输出
+        mcp_count = len(self.mcp.get_definitions())
+        if mcp_count > 0:
+            print(f"[MCP] 已加载 {mcp_count} 个外部工具")
+        else:
+            print("[MCP] 未加载外部工具（检查 .uki_mcp.json 是否存在且格式正确）")
 
         # 【第十一课】权限控制
         self.permission_mode = "default"  # default | auto | readonly
@@ -263,8 +277,10 @@ class UkiAgent:
                     })
                     continue
 
-                # 执行工具
-                result = execute_tool(tool_name, tool_args)
+                # 执行工具（MCP 外部工具优先，然后内置工具）
+                result = self.mcp.execute(tool_name, tool_args)
+                if result is None:
+                    result = execute_tool(tool_name, tool_args)
                 display.tool_result(result)
 
                 # 把工具的调用和结果都加入消息历史
@@ -345,11 +361,11 @@ class UkiAgent:
     # ================================================================
 
     def _call_llm(self, messages: list):
-        """调用 LLM，开启工具调用能力。"""
+        """调用 LLM，开启工具调用能力。使用合并后的工具列表（内置 + MCP）。"""
         return self.client.chat.completions.create(
             model=self.model,
             messages=messages,
-            tools=TOOL_DEFINITIONS,
+            tools=self.all_tools,
             tool_choice="auto",
         )
 

@@ -1,0 +1,14 @@
+{
+  "servers": [
+    {
+      "name": "sample",
+      "command": "python",
+      "args": ["mcp_servers/sample_server.py"]
+    },
+    {
+      "name": "fetch",
+      "command": "python",
+      "args": ["mcp_servers/fetch_server.py"]
+    }
+  ]
+}

@@ -179,10 +179,12 @@
       <div class="modal-nav" id="modalNav">
         <div class="nav-item active" data-section="llm">LLM 配置</div>
         <div class="nav-item" data-section="context">上下文窗口</div>
+        <div class="nav-item" data-section="mcp">MCP 服务器</div>
       </div>
       <div class="modal-content" id="modalContent">
         <div class="section active" id="sec-llm"></div>
         <div class="section" id="sec-context"></div>
+        <div class="section" id="sec-mcp"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -332,6 +334,7 @@ async function openSettings() {
 
   renderSection("sec-llm", configCache.filter(f => LLM_KEYS.includes(f.key)));
   renderSection("sec-context", configCache.filter(f => CTX_KEYS.includes(f.key)));
+  loadMCPSection();
 
   document.querySelectorAll(".nav-item").forEach(el => {
     el.classList.remove("active");
@@ -365,6 +368,47 @@ function renderSection(secId, fields) {
 }
 
 function escapeHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+async function loadMCPSection() {
+  const el = document.getElementById("sec-mcp");
+  try {
+    const r1 = await fetch(API + "/mcp");
+    const tools = await r1.json();
+    const r2 = await fetch(API + "/mcp-config");
+    const cfg = await r2.json();
+
+    let toolsHtml = "";
+    if (tools.servers && tools.servers.length > 0) {
+      for (const s of tools.servers) {
+        toolsHtml += `<div style="margin-bottom:8px;font-size:13px;color:var(--text)">
+          <span style="color:var(--accent);font-weight:600">${escapeHtml(s.name)}</span>
+          <span style="color:var(--muted)"> → ${s.tools.join(", ") || "无工具"}</span>
+        </div>`;
+      }
+    } else {
+      toolsHtml = `<div style="color:var(--muted);font-size:13px">暂无 MCP 服务器</div>`;
+    }
+
+    el.innerHTML = `
+      <div style="margin-bottom:14px">
+        <div style="font-size:14px;color:var(--text);margin-bottom:10px;font-weight:600">已连接的服务器</div>
+        ${toolsHtml}
+      </div>
+      <div class="field">
+        <label>配置文件 (.uki_mcp.json)
+          <span style="color:var(--muted);font-weight:400;font-size:11px">修改后需重启生效</span>
+        </label>
+        <textarea id="mcpConfigText"
+          style="width:100%;height:180px;background:var(--input-bg);border:1px solid #2a2a4a;
+          border-radius:8px;color:var(--text);font-size:12px;padding:10px;
+          font-family:Consolas,monospace;resize:vertical;outline:none"
+        >${escapeHtml(cfg.content)}</textarea>
+      </div>
+    `;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted)">加载失败: ${e.message}</div>`;
+  }
+}
 
 async function saveSettings() {
   const fields = [];
