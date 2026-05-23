@@ -297,39 +297,25 @@ class UkiAgent:
 
             # 情况 A：LLM 调用了工具
             if message.tool_calls:
-                tool_call = message.tool_calls[0]
-                tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
-
-                display.using_tool(tool_name, tool_args)
-
-                # 【第十一课】权限检查
-                if not self._check_permission(tool_name):
-                    messages.append(_assistant_msg(message))
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": f"操作被拒绝: {tool_name}（当前权限模式: {self.permission_mode}）。请告知用户并尝试其他方式。",
-                    })
-                    continue
-
-                # 执行工具（delegate 特殊处理，MCP 优先，然后内置）
-                if tool_name == "delegate":
-                    result = self._run_subagent(tool_args.get("task", ""))
-                else:
-                    result = self.mcp.execute(tool_name, tool_args)
-                    if result is None:
-                        result = execute_tool(tool_name, tool_args)
-                display.tool_result(result)
-
-                # 把工具的调用和结果都加入消息历史
                 messages.append(_assistant_msg(message))
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                })
-                # 继续循环，让 LLM 在工具结果的基础上再思考
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_args = json.loads(tool_call.function.arguments)
+                    display.using_tool(tool_name, tool_args)
+
+                    if not self._check_permission(tool_name):
+                        messages.append({"role": "tool", "tool_call_id": tool_call.id,
+                            "content": f"操作被拒绝: {tool_name}"})
+                        continue
+
+                    if tool_name == "delegate":
+                        result = self._run_subagent(tool_args.get("task", ""))
+                    else:
+                        result = self.mcp.execute(tool_name, tool_args)
+                        if result is None:
+                            result = execute_tool(tool_name, tool_args)
+                    display.tool_result(result)
+                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
                 continue
 
             # 情况 B：LLM 给出了最终文本回复（无工具调用）
