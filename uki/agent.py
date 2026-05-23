@@ -368,7 +368,31 @@ class UkiAgent:
             display.info("Uki 没有进一步的行动或回复")
             break
 
-        display.warning(f"达到最大轮数（{MAX_TURNS}），Uki 停止了思考。")
+        display.warning(f"达到最大轮数（{MAX_TURNS}），Uki 正在做最终总结...")
+
+        # 给 LLM 最后一次机会：总结当前进展
+        try:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "你已经达到了最大思考轮数。"
+                    "请用一段简短总结告诉用户你目前的进展、已完成的部分、以及还需要做什么。"
+                    "不要继续调用工具，直接输出文本。"
+                ),
+            })
+            final_response = self._call_llm(messages, tool_choice="none")
+            content = final_response.choices[0].message.content or ""
+            if content.strip():
+                display.agent_reply(content)
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": content})
+                self.has_recent_summary = False
+                return content
+        except Exception:
+            pass
+
+        # 如果 LLM 总结也失败了，至少保存部分上下文
+        display.warning("Uki 已停止。下一轮对话可以继续未完成的工作。")
 
     def _estimate_tokens(self, messages: list) -> int:
         """粗略估算当前消息的 token 数。兼容 dict 和 Pydantic 对象。"""
@@ -421,14 +445,42 @@ class UkiAgent:
     # 底层 LLM 调用
     # ================================================================
 
-    def _call_llm(self, messages: list):
-        """调用 LLM，开启工具调用能力。使用合并后的工具列表（内置 + MCP）。"""
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=self.all_tools,
-            tool_choice="auto",
-        )
+    def _call_llm(self, messages: list, tool_choice: str = "auto"):
+        """调用 LLM，开启工具调用能力。遇到速率限制时自动重试（指数退避）。"""
+        import time
+        max_retries = 3
+        base_delay = 5
+
+        for attempt in range(max_retries + 1):
+            try:
+                kwargs: dict = {
+                    "model": self.model,
+                    "messages": messages,
+                }
+                if tool_choice != "none":
+                    kwargs["tools"] = self.all_tools
+                    kwargs["tool_choice"] = tool_choice
+
+                return self.client.chat.completions.create(**kwargs)
+
+            except Exception as e:
+                err_str = str(e).lower()
+
+                # 速率限制或服务不可用：重试
+                is_rate = "429" in err_str or "rate" in err_str or "tpm" in err_str or "tokens per minute" in err_str
+                is_overloaded = "503" in err_str or "overloaded" in err_str or "service unavailable" in err_str
+                is_timeout = "timeout" in err_str or "timed out" in err_str
+
+                if (is_rate or is_overloaded or is_timeout) and attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    display.warning(
+                        f"API 请求被限制/超时，{delay} 秒后重试（第 {attempt + 1}/{max_retries} 次）…"
+                    )
+                    time.sleep(delay)
+                    continue
+
+                # 其他错误或不重试了：直接抛出
+                raise
 
     # ================================================================
     # 保留简单对话方法（向后兼容）
