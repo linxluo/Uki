@@ -180,11 +180,13 @@
         <div class="nav-item active" data-section="llm">LLM 配置</div>
         <div class="nav-item" data-section="context">上下文窗口</div>
         <div class="nav-item" data-section="mcp">MCP 服务器</div>
+        <div class="nav-item" data-section="tools">当前工具</div>
       </div>
       <div class="modal-content" id="modalContent">
         <div class="section active" id="sec-llm"></div>
         <div class="section" id="sec-context"></div>
         <div class="section" id="sec-mcp"></div>
+        <div class="section" id="sec-tools"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -335,6 +337,7 @@ async function openSettings() {
   renderSection("sec-llm", configCache.filter(f => LLM_KEYS.includes(f.key)));
   renderSection("sec-context", configCache.filter(f => CTX_KEYS.includes(f.key)));
   loadMCPSection();
+  loadToolsSection();
 
   document.querySelectorAll(".nav-item").forEach(el => {
     el.classList.remove("active");
@@ -368,6 +371,25 @@ function renderSection(secId, fields) {
 }
 
 function escapeHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+async function loadToolsSection() {
+  const el = document.getElementById("sec-tools");
+  try {
+    const r = await fetch(API + "/tools");
+    const data = await r.json();
+    let html = "";
+    for (const t of data.tools) {
+      html += `<div style="margin-bottom:6px;font-size:13px;display:flex;align-items:baseline;gap:8px">
+        <span style="color:var(--accent);font-weight:600;min-width:100px">${escapeHtml(t.name)}</span>
+        <span style="color:var(--muted);flex:1">${escapeHtml(t.description)}</span>
+        <span style="color:var(--muted);font-size:11px;min-width:60px;text-align:right">${escapeHtml(t.source)}</span>
+      </div>`;
+    }
+    el.innerHTML = html || '<div style="color:var(--muted)">暂无工具</div>';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted)">加载失败: ${e.message}</div>`;
+  }
+}
 
 async function loadMCPSection() {
   const el = document.getElementById("sec-mcp");

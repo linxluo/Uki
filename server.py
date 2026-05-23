@@ -160,6 +160,26 @@ async def get_mcp_tools():
     return {"servers": servers_info}
 
 
+@app.get("/tools")
+async def get_all_tools():
+    """获取所有可用工具（内置 + MCP）"""
+    tools = []
+    for t in agent.all_tools:
+        func = t["function"]
+        source = "内置"
+        # 检查是否是 MCP 工具
+        for srv in agent.mcp.servers:
+            for st in srv.tools:
+                if st["function"]["name"] == func["name"]:
+                    source = f"MCP ({srv.name})"
+        tools.append({
+            "name": func["name"],
+            "description": func.get("description", "")[:80],
+            "source": source,
+        })
+    return {"tools": tools}
+
+
 @app.get("/mcp-config")
 async def get_mcp_config():
     """读取 MCP 配置文件内容"""
