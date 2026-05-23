@@ -1,0 +1,8 @@
+{
+  "name": "weather",
+  "version": "1.0.0",
+  "description": "天气查询插件：支持查询全国城市的实时天气，数据来源 wttr.in",
+  "author": "Uki",
+  "type": "python",
+  "enabled": true
+}

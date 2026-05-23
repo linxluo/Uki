@@ -64,6 +64,13 @@ class CommandRegistry:
             lines.append(f"  {name:<15} {cmd.description}")
         return "\n".join(lines)
 
+    def list_commands_as_dict(self) -> list[dict]:
+        """返回所有命令的结构化列表，供前端自动补全使用。"""
+        return [
+            {"name": name, "description": cmd.description}
+            for name, cmd in self._commands.items()
+        ]
+
 
 # ============================================================
 # 内置命令的处理器
@@ -193,6 +200,159 @@ def _cmd_mode(args: str) -> str:
     return "\n".join(lines)
 
 
+def _cmd_plugin(args: str) -> str:
+    """/plugin 命令：查看已加载的插件状态，或安装/管理插件"""
+    if not _agent_ref:
+        return "无法访问 Agent 实例。"
+
+    parts = args.strip().split(maxsplit=1)
+    sub = parts[0].lower() if parts else ""
+    sub_args = parts[1] if len(parts) > 1 else ""
+
+    pm = _agent_ref.plugin_manager
+
+    if sub == "install":
+        if not sub_args:
+            return "用法: /plugin install <插件zip文件路径>\n示例: /plugin install C:/Downloads/pdf_reader.zip"
+        if pm.install_from_zip(sub_args):
+            # 安装成功后刷新 agent 的工具列表
+            _agent_ref._rebuild_tool_list()
+            return f"插件安装成功！\n{pm.plugin_status()}"
+        else:
+            return "插件安装失败，请检查 zip 文件是否有效。"
+
+    if sub == "list" or not sub:
+        return pm.plugin_status()
+
+    return f"未知子命令: {sub}\n可用: /plugin list | /plugin install <zip路径>"
+
+
+def _cmd_create_my_plugin(args: str) -> str:
+    """/createMyPlugin 命令：根据需求描述自动生成插件并安装"""
+    if not _agent_ref:
+        return "无法访问 Agent 实例。"
+
+    requirement = args.strip()
+    if not requirement:
+        return "用法: /createMyPlugin <需求描述>\n示例: /createMyPlugin 创建一个翻译插件，支持中英互译"
+
+    pm = _agent_ref.plugin_manager
+
+    # 1. 构造 prompt，让 LLM 生成插件代码
+    prompt = f"""请根据以下需求创建一个 Uki 插件。
+
+需求：{requirement}
+
+## 插件规范
+一个 Uki 插件包含两个文件：
+
+### uki_plugin.json（清单文件）
+```json
+{{
+  "name": "插件名（英文，snake_case）",
+  "version": "1.0.0",
+  "description": "简短描述",
+  "type": "python",
+  "dependencies": ["需要的 pip 包名"]
+}}
+```
+
+### plugin.py（插件代码）
+```python
+from uki.plugin_manager import UkiPlugin
+
+class XxxPlugin(UkiPlugin):
+    def on_load(self, agent=None):
+        print(f"[Xxx] 插件已就绪")
+
+    def get_tool_definitions(self):
+        # 返回 OpenAI function calling 格式的工具定义列表
+        return [...]
+
+    def execute_tool(self, name, arguments):
+        # 执行工具，返回结果字符串；不识别则返回 None
+        ...
+
+    def get_commands(self):
+        # 返回 [(命令名, 描述, 处理函数), ...]
+        return []
+```
+
+## 输出格式
+请严格输出一个 JSON 对象，不要包含任何其他文字：
+```json
+{{
+  "manifest": {{ "name": "...", "version": "1.0.0", "description": "...", "type": "python", "dependencies": [...] }},
+  "plugin_py": "import ...\\n\\nclass ..."
+}}
+```
+注意：plugin_py 中的字符串需要正确转义（\\n 表示换行，\\" 表示引号）。"""
+
+    # 2. 调 LLM 生成代码
+    try:
+        response = _agent_ref.client.chat.completions.create(
+            model=_agent_ref.model,
+            messages=[
+                {"role": "system", "content": "你是一个 Uki 插件生成器。根据用户需求生成完整可用的插件代码。只输出要求的 JSON，不要任何额外文字。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        raw = response.choices[0].message.content or ""
+    except Exception as e:
+        return f"LLM 调用失败: {e}"
+
+    # 3. 解析 JSON
+    import json as _json
+    import re as _re
+    # 尝试提取 JSON 块
+    match = _re.search(r'\{[^{}]*"manifest"[^{}]*\}', raw, _re.DOTALL)
+    if not match:
+        # 尝试找任意最外层 JSON
+        match = _re.search(r'\{.+\}', raw, _re.DOTALL)
+    if not match:
+        return f"无法解析 LLM 返回的内容。原始回复:\n{raw[:500]}"
+
+    try:
+        data = _json.loads(match.group())
+    except _json.JSONDecodeError as e:
+        return f"JSON 解析失败: {e}\n原始回复:\n{raw[:500]}"
+
+    manifest = data.get("manifest", {})
+    plugin_py = data.get("plugin_py", "")
+
+    if not manifest.get("name") or not plugin_py:
+        return f"生成的插件缺少必要字段（name 或 plugin_py）。\n返回内容:\n{raw[:500]}"
+
+    name = manifest["name"]
+
+    # 4. 写入插件目录
+    import os as _os
+    plugin_dir = pm._plugins_dir / name
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_path = plugin_dir / "uki_plugin.json"
+    plugin_path = plugin_dir / "plugin.py"
+
+    manifest_path.write_text(_json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    plugin_path.write_text(plugin_py, encoding="utf-8")
+
+    # 5. 打包 zip
+    import zipfile as _zf
+    zip_path = pm._plugins_dir / f"{name}.zip"
+    with _zf.ZipFile(str(zip_path), "w", _zf.ZIP_DEFLATED) as zf:
+        zf.write(str(manifest_path), f"{name}/uki_plugin.json")
+        zf.write(str(plugin_path), f"{name}/plugin.py")
+
+    # 6. 安装
+    ok = pm.install_from_zip(str(zip_path))
+    if ok:
+        _agent_ref._rebuild_tool_list()
+        return f"插件「{name}」已创建并安装！\n\n位置: {plugin_dir}\nZip: {zip_path}\n\n你可以用 /plugin 查看状态，或在设置面板的「已安装的插件」中管理。"
+    else:
+        return f"插件文件已生成（{plugin_dir}），但自动安装失败。请手动拖入 {zip_path} 安装。"
+
+
 def create_builtin_registry() -> CommandRegistry:
     """创建并返回预装内置命令的注册表"""
     registry = CommandRegistry()
@@ -206,6 +366,8 @@ def create_builtin_registry() -> CommandRegistry:
     registry.register("/context", "查看当前上下文用量说明", _cmd_context)
     registry.register("/init", "初始化项目规则文件（UKI.md 和 .env.example）", _cmd_init)
     registry.register("/mode", "查看或切换权限模式（default/auto/readonly）", _cmd_mode)
+    registry.register("/plugin", "查看已加载的插件状态", _cmd_plugin)
+    registry.register("/createMyPlugin", "根据需求描述自动生成并安装插件", _cmd_create_my_plugin)
 
     # 让 /help 处理器能访问注册表
     import types

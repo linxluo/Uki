@@ -8,6 +8,8 @@ Uki 的工具集
 """
 
 import os
+import subprocess
+import shlex
 import re
 from pathlib import Path
 
@@ -115,6 +117,33 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_bash",
+            "description": (
+                "在当前项目目录中执行一条 Shell 命令，返回 stdout 和 stderr 输出。"
+                f"当前操作系统：{os.name}（{'Windows，用 dir/del/type，不用 ls/rm/cat' if os.name == 'nt' else 'Linux/Mac，用 ls/rm/cat 等 Unix 命令'}）。"
+                "可用于安装 Python 包（pip install）、运行脚本、执行系统命令等。"
+                "危险命令（如 rm -rf /、format 等）会被自动拦截。"
+                "默认超时 60 秒，最长 300 秒。输出上限 8000 字符。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "要执行的 Shell 命令。Windows 上通过 cmd.exe /c 执行。",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "超时秒数，默认 60，最大 300",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
 
 
@@ -145,6 +174,11 @@ def execute_tool(name: str, arguments: dict) -> str:
             arguments["pattern"],
             arguments["search_type"],
             arguments.get("directory", "."),
+        )
+    elif name == "execute_bash":
+        raw = _execute_bash(
+            arguments["command"],
+            arguments.get("timeout", 60),
         )
     else:
         return f"未知工具: {name}"
@@ -272,3 +306,85 @@ def _is_ignored(file_path: Path) -> bool:
         if part in ignore_dirs:
             return True
     return False
+
+
+# ============================================================
+# execute_bash（S3：执行命令与沙箱）
+# ============================================================
+
+# 拦截模式：匹配到的命令直接拒绝，返回安全提示
+_DANGEROUS_PATTERNS = [
+    (r"rm\s+-rf\s+/", "禁止递归删除根目录"),
+    (r"rm\s+-rf\s+~", "禁止递归删除用户目录"),
+    (r":\(\)\s*\{", "疑似 fork 炸弹"),
+    (r"mkfs\.", "禁止格式化磁盘"),
+    (r"dd\s+if=", "禁止直接操作磁盘设备"),
+    (r">\s*/dev/sd", "禁止写入磁盘设备"),
+    (r"chmod\s+777\s+/", "禁止修改根目录权限"),
+    (r"shutdown", "禁止关机/重启命令"),
+    # Windows 危险模式
+    (r"del\s+/[fsq]\s+[a-z]:\\", "禁止删除盘符根目录文件"),
+    (r"del\s+/[fsq]\s+%systemroot%", "禁止删除系统目录"),
+    (r"rd\s+/[sq]\s+[a-z]:\\", "禁止删除盘符根目录"),
+    (r"format\s+[a-z]:", "禁止格式化磁盘"),
+]
+
+
+def _check_dangerous(command: str) -> str | None:
+    """检查命令是否危险。返回 None 表示安全，否则返回拦截原因。"""
+    import re as _re
+    cmd_lower = command.lower()
+    for pattern, reason in _DANGEROUS_PATTERNS:
+        if _re.search(pattern, cmd_lower):
+            return reason
+    return None
+
+
+def _execute_bash(command: str, timeout: int = 60) -> str:
+    """
+    在当前工作目录执行 Shell 命令，返回 stdout + stderr。
+    自动拦截危险命令，超时保护，输出截断。
+    """
+    # 安全检查
+    danger = _check_dangerous(command)
+    if danger:
+        return f"[安全拦截] {danger}\n命令: {command}"
+
+    # 超时上限
+    timeout = min(max(timeout, 10), 300)
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(Path(".").resolve()),
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+    except subprocess.TimeoutExpired:
+        return f"[超时] 命令在 {timeout} 秒内未完成，已终止。\n命令: {command}"
+    except Exception as e:
+        return f"[错误] 命令执行失败: {e}\n命令: {command}"
+
+    # 组合输出
+    output = ""
+    if result.stdout.strip():
+        output += result.stdout.strip()
+    if result.stderr.strip():
+        if output:
+            output += "\n"
+        output += f"[stderr]\n{result.stderr.strip()}"
+
+    # 截断
+    max_chars = 8000
+    if len(output) > max_chars:
+        output = output[:max_chars] + f"\n\n...（输出过长，已截断至 {max_chars} 字符）"
+
+    if not output:
+        output = f"(命令执行完成，无输出。退出码: {result.returncode})"
+    else:
+        output += f"\n\n(退出码: {result.returncode})"
+
+    return output

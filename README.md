@@ -48,7 +48,13 @@ UkiAgent/
 │   ├── config.py       # 配置管理 + 模型窗口智能适配
 │   ├── commands.py     # 斜杠命令系统（/help /init 等）
 │   ├── display.py      # 终端输出（颜色 + 阶段符号）
+│   ├── plugin_manager.py # 插件管理器（发现/加载/生命周期）
 │   └── model_fetcher.py # OpenRouter API 缓存（自动获取模型窗口）
+│
+├── plugins/            # 插件目录
+│   └── time_utils/     # 示例插件（时间工具）
+│       ├── uki_plugin.json
+│       └── plugin.py
 │
 ├── electron/           # Electron 桌面壳
 │   └── main.js         # 主进程（启动 Python 后端 + 创建窗口）
@@ -78,6 +84,10 @@ UkiAgent/
 │  tools.py: 文件操作 / 搜索                    │
 │  config.py: 配置 + 模型窗口                   │
 │  commands.py: 本地命令 /help /init 等         │
+│  plugin_manager.py: 插件发现/加载/生命周期     │
+├────────────────────────────────────────────┤
+│  扩展层                                      │
+│  plugins/: 插件目录（动态加载工具和命令）        │
 ├────────────────────────────────────────────┤
 │  存储层                                      │
 │  UKI.md: 项目规则    .env: LLM 配置            │
@@ -90,11 +100,12 @@ UkiAgent/
 
 ```
 用户输入 → 界面层 → POST /chat → agent.run()
-  → system prompt（身份 + UKI.md 规则）
+  → system prompt（身份 + UKI.md 规则 + Git 状态）
   → + 对话历史（自动总结超阈值）
   → + 当前消息
+  → 工具列表 = 内置工具 + MCP 工具 + 插件工具
   → LLM 返回 tool_calls？
-     是 → 执行工具（结果截断 4K）→ 继续循环
+     是 → 执行工具（插件优先 > MCP > 内置）→ 结果截断 4K → 继续循环
      否 → 返回文本回复 → SSE 流式推送 → 界面显示
 ```
 
@@ -110,3 +121,8 @@ UkiAgent/
 - **第八课（2026-05-21）**：实现上下文管理。token 估算、自动裁剪、/compact 和 /context 命令。让 Uki 意识到自己记忆有限并自动处理。
 - **第九课（2026-05-21）**：改善终端输出（display.py，ANSI 颜色 + 阶段符号）。Electron 桌面应用搭建，FastAPI 后端 + SSE 流式 + HTML 深色气泡界面 + 设置面板。
 - **第十课（2026-05-21）**：完善项目结构和架构文档。README 加入四层架构图和消息流说明。新增 /init 命令（一键初始化 UKI.md 和 .env.example）。
+- **第十一课（2026-05-22）**：权限控制。default/auto/readonly 三种模式，CLI 用 input() 确认，Electron 用 SSE + 前端确认栏。
+- **第十二课（2026-05-22）**：Git 状态感知。通过 UKI_GIT_CONTEXT=1 环境变量控制开关，在 system prompt 中注入 Git 摘要。
+- **第十三课（2026-05-22）**：MCP 外部工具。JSON-RPC stdio 协议客户端，支持 .uki_mcp.json 配置，内置 fetch 和 sample MCP 服务器。
+- **第十四课（2026-05-22）**：子代理。delegate 工具实现并行任务拆分，子代理独立上下文 + 只读工具，4 轮限制防递归。
+- **第十五课（2026-05-23）**：插件系统。对应 Claude Code 的 Plugin 机制：自包含插件目录 + uki_plugin.json 清单 + 动态发现加载 + 标准接口（工具/命令）。内置 /plugin 命令查看状态。示例插件 time_utils 提供时间和日期计算。

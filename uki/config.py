@@ -44,6 +44,14 @@ class Config:
         """检查是否已配置好 API key"""
         return bool(cls.api_key and cls.api_key != "sk-your-key-here")
 
+    @classmethod
+    def reload(cls):
+        """重新加载 .env 配置，用于运行时修改配置后即时生效。"""
+        load_dotenv(override=True)
+        cls.api_key = os.getenv("OPENAI_API_KEY", "")
+        cls.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        cls.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
     # ============================================================
     # 上下文窗口（根据当前模型自动匹配）
     # ============================================================

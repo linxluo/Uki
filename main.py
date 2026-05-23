@@ -5,6 +5,14 @@ Uki 的入口文件
 运行方式: python main.py
 """
 
+import sys
+import io
+
+# Windows 终端可能用 GBK，强制 UTF-8 防止 emoji/中文崩溃
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+if sys.stderr.encoding != "utf-8":
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 from uki.config import Config
 from uki.agent import UkiAgent
 from uki.commands import create_builtin_registry, set_agent_ref
@@ -30,6 +38,14 @@ def main():
     commands = create_builtin_registry()
     uki = UkiAgent()
     set_agent_ref(uki)
+
+    # 【第十五课】加载插件
+    display.section("加载插件")
+    loaded = uki.load_plugins()
+    if loaded > 0:
+        # 将插件命令注册到命令系统
+        uki.plugin_manager.register_commands(commands)
+    print()
 
     # CLI 模式的权限确认回调
     def cli_permission(tool_name):

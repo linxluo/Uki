@@ -5,6 +5,13 @@ const path = require("path");
 let mainWindow;
 let pythonProcess;
 
+// 禁用 GPU 加速，避免部分 Windows 环境下 GPU 进程崩溃
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-software-rasterizer");
+app.commandLine.appendSwitch("in-process-gpu");
+app.commandLine.appendSwitch("no-sandbox");
+
 function startPythonBackend() {
   const serverPath = path.join(__dirname, "..", "server.py");
   pythonProcess = spawn("python", [serverPath], {

@@ -7,26 +7,39 @@ Uki 本地 HTTP 服务器 (FastAPI)
 
 import sys
 import io
+
+# Windows 下 Electron 子进程 stdout 默认 GBK，强制 UTF-8 防止 emoji/中文崩溃
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+if sys.stderr.encoding != "utf-8":
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 import queue
 import json
 import re
 import asyncio
 from pathlib import Path
 import threading
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from uki.agent import UkiAgent
 from uki.config import Config
-from uki.commands import set_agent_ref
+from uki.commands import set_agent_ref, create_builtin_registry
 
 app = FastAPI(title="Uki API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 agent = UkiAgent()
 set_agent_ref(agent)
+
+# 命令注册表（供前端自动补全使用）
+commands = create_builtin_registry()
+
+# 【第十五课】加载插件
+agent.load_plugins()
+agent.plugin_manager.register_commands(commands)
 
 # Electron 模式下的权限确认
 _confirm_event = threading.Event()
@@ -71,6 +84,12 @@ class _QueueStream:
         if self._buf.strip():
             self.q.put(self._buf)
             self._buf = ""
+
+
+@app.get("/commands")
+async def get_commands():
+    """返回所有可用命令列表，供前端自动补全。"""
+    return {"commands": commands.list_commands_as_dict()}
 
 
 @app.post("/chat")
@@ -127,6 +146,11 @@ class ModeRequest(BaseModel):
 
 class ConfirmRequest(BaseModel):
     approved: bool
+
+
+class TogglePluginRequest(BaseModel):
+    name: str
+    enabled: bool
 
 
 @app.post("/mode")
@@ -283,7 +307,7 @@ class SaveConfigRequest(BaseModel):
 
 @app.post("/config")
 async def save_config(req: SaveConfigRequest):
-    """保存配置。未修改的密码字段不会覆盖原有值。"""
+    """保存配置并即时生效。"""
     env_data = _read_env()
     updates = {}
     for f in req.fields:
@@ -291,13 +315,138 @@ async def save_config(req: SaveConfigRequest):
         val = str(f.get("value", "")).strip()
         if not key:
             continue
-        # 如果是密码字段且值已被遮蔽（含 ...），则保留原值
         field_def = next((x for x in CONFIG_FIELDS if x["key"] == key), None)
         if field_def and field_def["type"] == "password" and "..." in val and key in env_data:
             continue
         updates[key] = val
     _write_env(updates)
+    # 即时生效：重载配置 + 重建 LLM 客户端
+    Config.reload()
+    agent.reload_client()
     return {"status": "ok"}
+
+
+# ============================================================
+# 插件管理
+# ============================================================
+
+@app.get("/plugins")
+async def get_plugins():
+    """获取所有已发现插件的状态列表。"""
+    return {"plugins": agent.plugin_manager.get_all_plugins_info()}
+
+
+@app.post("/plugins/install")
+async def install_plugin(file: UploadFile = File(...)):
+    """
+    上传并安装一个插件 zip 文件。
+    保存到临时路径，调用 plugin_manager.install_from_zip()。
+    """
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        return {"ok": False, "error": "只接受 .zip 文件"}
+
+    # 保存到临时文件
+    temp_path = Path(f"_uki_plugin_upload_{file.filename}")
+    try:
+        content = await file.read()
+        temp_path.write_bytes(content)
+    except Exception as e:
+        return {"ok": False, "error": f"文件写入失败: {e}"}
+
+    # 安装
+    try:
+        ok = agent.plugin_manager.install_from_zip(str(temp_path))
+        if ok:
+            agent._rebuild_tool_list()
+        return {"ok": ok, "error": None if ok else "安装失败，请检查 zip 是否有效"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        # 清理临时文件
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@app.post("/plugins/toggle")
+async def toggle_plugin(req: TogglePluginRequest):
+    """启用或禁用指定插件。"""
+    pm = agent.plugin_manager
+    if req.enabled:
+        ok = pm.enable_plugin(req.name)
+    else:
+        ok = pm.disable_plugin(req.name)
+
+    if ok:
+        agent._rebuild_tool_list()
+    return {"ok": ok, "name": req.name, "enabled": req.enabled}
+
+
+@app.delete("/plugins/{name}")
+async def delete_plugin(name: str):
+    """彻底删除指定插件。"""
+    pm = agent.plugin_manager
+    ok = pm.uninstall_plugin(name)
+    if ok:
+        agent._rebuild_tool_list()
+    return {"ok": ok, "name": name}
+
+
+# ============================================================
+# 文件上传
+# ============================================================
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """上传任意文件，保存到 uploads/ 目录。"""
+    safe_name = Path(file.filename).name
+    dest = UPLOAD_DIR / safe_name
+    counter = 1
+    stem, suffix = dest.stem, dest.suffix
+    while dest.exists():
+        dest = UPLOAD_DIR / f"{stem}_{counter}{suffix}"
+        counter += 1
+    try:
+        content = await file.read()
+        dest.write_bytes(content)
+        return {"ok": True, "path": str(dest.resolve()), "name": safe_name, "size": len(content)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/uploads")
+async def list_uploads():
+    """列出 uploads/ 目录中所有已上传文件。"""
+    if not UPLOAD_DIR.exists():
+        return {"files": []}
+    files = []
+    for f in sorted(UPLOAD_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if f.is_file():
+            stat = f.stat()
+            files.append({
+                "name": f.name,
+                "path": str(f.resolve()),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+    return {"files": files}
+
+
+@app.delete("/uploads/{name:path}")
+async def delete_upload(name: str):
+    """删除 uploads/ 目录中的指定文件。"""
+    # 安全检查：防止路径遍历攻击
+    safe_name = Path(name).name
+    target = UPLOAD_DIR / safe_name
+    if not target.exists() or not target.is_file():
+        return {"ok": False, "error": "文件不存在"}
+    try:
+        target.unlink()
+        return {"ok": True, "name": safe_name}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 if __name__ == "__main__":

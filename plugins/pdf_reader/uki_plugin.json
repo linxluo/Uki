@@ -1,0 +1,11 @@
+{
+  "name": "pdf_reader",
+  "version": "1.0.0",
+  "description": "PDF 阅读插件：提取文本文档内容，供 Uki 阅读和总结",
+  "author": "Uki Plugin Demo",
+  "type": "python",
+  "dependencies": [
+    "pypdf"
+  ],
+  "enabled": false
+}

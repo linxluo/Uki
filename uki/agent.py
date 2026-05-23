@@ -13,6 +13,7 @@ from openai import OpenAI
 from uki.config import Config
 from uki.tools import TOOL_DEFINITIONS, execute_tool
 from uki.mcp_client import MCPManager
+from uki.plugin_manager import PluginManager
 from uki import display
 from uki.git_helper import get_summary
 
@@ -76,8 +77,12 @@ class UkiAgent:
         # 【第十三课】MCP 外部工具
         self.mcp = MCPManager()
 
-        # 合并内置工具和外部工具定义
-        self.all_tools = list(TOOL_DEFINITIONS) + self.mcp.get_definitions()
+        # 【第十五课】插件系统
+        self.plugin_manager = PluginManager()
+        self.plugin_manager.set_agent(self)
+
+        # 合并内置工具 + MCP 工具 + 插件工具
+        self._rebuild_tool_list()
 
         # 【第十一课】权限控制
         self.permission_mode = "default"  # default | auto | readonly
@@ -87,6 +92,33 @@ class UkiAgent:
         """清除跨轮次对话历史"""
         self.conversation_history = []
         self.has_recent_summary = False
+
+    def reload_client(self):
+        """重新创建 LLM 客户端，用于配置修改后即时生效。"""
+        self.client = OpenAI(
+            api_key=Config.api_key,
+            base_url=Config.base_url,
+        )
+        self.model = Config.model
+
+    # ================================================================
+    # 工具列表管理（第十五课）
+    # ================================================================
+
+    def _rebuild_tool_list(self):
+        """重建合并后的工具列表：内置 + MCP + 插件。"""
+        self.all_tools = (
+            list(TOOL_DEFINITIONS)
+            + self.mcp.get_definitions()
+            + self.plugin_manager.get_all_tool_definitions()
+        )
+
+    def load_plugins(self):
+        """加载插件并刷新工具列表。在 Agent 初始化后调用。"""
+        count = self.plugin_manager.load_all()
+        if count > 0:
+            self._rebuild_tool_list()
+        return count
 
     # ================================================================
     # 子代理（第十四课）
@@ -134,7 +166,7 @@ class UkiAgent:
     # 权限控制（第十一课）
     # ================================================================
 
-    WRITE_TOOLS = {"write_file"}
+    WRITE_TOOLS = {"write_file", "execute_bash"}
 
     def set_mode(self, mode: str):
         """切换权限模式：default / auto / readonly"""
@@ -243,6 +275,7 @@ class UkiAgent:
         """构建完整的系统提示词（基础角色 + Git 状态 + 项目规则）"""
         base = (
             "你是 Uki，一个温暖、多变的日常助手。"
+            "回复时使用 Markdown 格式：标题用 ##，加粗用 **文字**，列表用 - 开头，代码用 `` ` ``。段落之间空一行。"
         )
         # Git 状态仅在开发模式下注入（通过 UKI_GIT_CONTEXT=1 控制）
         if Config.git_context_enabled():
@@ -311,7 +344,10 @@ class UkiAgent:
                     if tool_name == "delegate":
                         result = self._run_subagent(tool_args.get("task", ""))
                     else:
-                        result = self.mcp.execute(tool_name, tool_args)
+                        # 优先级：插件 > MCP > 内置工具
+                        result = self.plugin_manager.execute_tool(tool_name, tool_args)
+                        if result is None:
+                            result = self.mcp.execute(tool_name, tool_args)
                         if result is None:
                             result = execute_tool(tool_name, tool_args)
                     display.tool_result(result)
