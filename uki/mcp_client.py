@@ -68,17 +68,9 @@ class MCPServerConnection:
             "capabilities": {},
             "clientInfo": {"name": "Uki", "version": "1.0.0"},
         })
-        # MCP 协议要求 initialize 后发送 initialized 通知
-        self._notify("notifications/initialized", {})
         result = self._send("tools/list")
         raw_tools = result.get("tools", [])
         self.tools = [self._convert_tool(t) for t in raw_tools]
-
-    def _notify(self, method: str, params: dict):
-        """发送 JSON-RPC 通知（无 id，不等待响应）"""
-        notification = {"jsonrpc": "2.0", "method": method, "params": params}
-        self._process.stdin.write(json.dumps(notification) + "\n")
-        self._process.stdin.flush()
 
     def _convert_tool(self, raw: dict) -> dict:
         """将 MCP 工具定义转为 OpenAI function calling 格式"""

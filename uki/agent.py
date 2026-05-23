@@ -78,13 +78,6 @@ class UkiAgent:
         # 合并内置工具和外部工具定义
         self.all_tools = list(TOOL_DEFINITIONS) + self.mcp.get_definitions()
 
-        # 诊断输出
-        mcp_count = len(self.mcp.get_definitions())
-        if mcp_count > 0:
-            print(f"[MCP] 已加载 {mcp_count} 个外部工具")
-        else:
-            print("[MCP] 未加载外部工具（检查 .uki_mcp.json 是否存在且格式正确）")
-
         # 【第十一课】权限控制
         self.permission_mode = "default"  # default | auto | readonly
         self.permission_callback = None   # 外部注入的确认回调
