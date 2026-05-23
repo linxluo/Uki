@@ -98,6 +98,23 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate",
+            "description": "派一个子代理独立完成指定的子任务。子代理可以读文件和搜索，完成后返回结果。适合并行处理或把大任务拆成小任务。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "子代理要完成的具体任务描述",
+                    },
+                },
+                "required": ["task"],
+            },
+        },
+    },
 ]
 
 

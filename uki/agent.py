@@ -18,6 +18,7 @@ from uki.git_helper import get_summary
 
 # 最大循环轮数，防止无限循环消耗费用
 MAX_TURNS = 10
+SUBAGENT_MAX_TURNS = 4  # 子代理轮数更少，防止递归爆炸
 
 # Token 相关阈值（从 Config 动态读取，不再写死）
 # 如果你强制需要一个值，可以写 0 让 Uki 自动匹配模型
@@ -86,6 +87,48 @@ class UkiAgent:
         """清除跨轮次对话历史"""
         self.conversation_history = []
         self.has_recent_summary = False
+
+    # ================================================================
+    # 子代理（第十四课）
+    # ================================================================
+
+    def _run_subagent(self, task: str) -> str:
+        """
+        启动一个轻量子代理完成子任务。
+        子代理仅拥有只读工具，独立上下文，无权限限制。
+        """
+        display.info(f"🤖 子代理启动: {task[:60]}...")
+
+        sub_tool_names = {"list_files", "read_file", "search_code"}
+        sub_tools = [t for t in self.all_tools if t["function"]["name"] in sub_tool_names]
+
+        messages = [
+            {"role": "system", "content": "你是 Uki 的子代理，专注完成单个任务。使用工具获取信息，给出简洁准确的结果。不要写文件，不要派新子代理。"},
+            {"role": "user", "content": task},
+        ]
+
+        for turn in range(1, SUBAGENT_MAX_TURNS + 1):
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=sub_tools,
+                tool_choice="auto",
+            )
+            msg = response.choices[0].message
+
+            if msg.tool_calls:
+                tc = msg.tool_calls[0]
+                args = json.loads(tc.function.arguments)
+                result = execute_tool(tc.function.name, args)
+                messages.append(_assistant_msg(msg))
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                continue
+
+            if msg.content:
+                display.success("子代理完成")
+                return f"[子代理结果]\n任务: {task}\n结果: {msg.content}"
+
+        return f"[子代理] 未能在 {SUBAGENT_MAX_TURNS} 轮内完成: {task}"
 
     # ================================================================
     # 权限控制（第十一课）
@@ -270,10 +313,13 @@ class UkiAgent:
                     })
                     continue
 
-                # 执行工具（MCP 外部工具优先，然后内置工具）
-                result = self.mcp.execute(tool_name, tool_args)
-                if result is None:
-                    result = execute_tool(tool_name, tool_args)
+                # 执行工具（delegate 特殊处理，MCP 优先，然后内置）
+                if tool_name == "delegate":
+                    result = self._run_subagent(tool_args.get("task", ""))
+                else:
+                    result = self.mcp.execute(tool_name, tool_args)
+                    if result is None:
+                        result = execute_tool(tool_name, tool_args)
                 display.tool_result(result)
 
                 # 把工具的调用和结果都加入消息历史
