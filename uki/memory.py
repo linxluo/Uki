@@ -99,7 +99,11 @@ PRAGMA synchronous=NORMAL;
 class MemoryStore:
     """记忆存储引擎。SQLite 后台，embedding 搜索在应用层。"""
 
-    EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+    EMBEDDING_MODEL = os.environ.get(
+        "UKI_EMBEDDING_MODEL",
+        "text-embedding-3-small"  # OpenAI 默认；DeepSeek 用户改 .env
+    )
+    EMBEDDING_PROVIDER = os.environ.get("UKI_EMBEDDING_PROVIDER", "")  # 空=跟 Chat 用同个 base_url
 
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or DB_FILE
@@ -260,18 +264,15 @@ class MemoryStore:
     def search(self, query: str, limit: int = MAX_INJECT_MEMORIES,
                min_importance: int = 0) -> list[dict]:
         """
-        分层检索相关记忆。
-        优先语义搜索，fallback 关键词匹配。
-        按 importance 降序，limit 条。
+        分层检索。仅用 embedding 语义搜索。
+        embedding 不可用时返回空列表（记忆系统静默降级）。
         """
         conn = self._get_conn()
 
-        # 每个 session 运行一次衰减
         if not self._decay_checked:
             self._apply_decay()
             self._decay_checked = True
 
-        # 取活跃记忆
         rows = conn.execute(
             "SELECT * FROM memories WHERE status='active' AND importance >= ?",
             (min_importance,),
@@ -280,14 +281,13 @@ class MemoryStore:
         if not rows:
             return []
 
-        memories = [_row_to_dict(r) for r in rows]
-
-        # 语义搜索
+        # 获取 query embedding
         query_vec = self._encode(query)
-        if query_vec is not None and any(m.get("embedding") for m in memories):
-            results = self._semantic_search(query_vec, memories, limit)
-        else:
-            results = self._keyword_search(query, memories, limit)
+        if query_vec is None:
+            return []  # embedding 不可用，不降级到关键词
+
+        memories = [_row_to_dict(r) for r in rows]
+        results = self._semantic_search(query_vec, memories, limit)
 
         # 更新访问计数
         now = time.time()
@@ -434,29 +434,87 @@ class MemoryStore:
         return "\n".join(lines)
 
     # ============================================================
-    # Embedding
+    # Embedding（API 优先，本地模型 fallback）
     # ============================================================
 
+    # 全局 API 客户端引用（由 agent.py 注入）
+    _embed_client = None
+    _embed_model = None
+
+    @classmethod
+    def set_embedding_client(cls, client, model: str = ""):
+        """注入 OpenAI 兼容客户端用于 embedding API"""
+        cls._embed_client = client
+        cls._embed_model = model or cls.EMBEDDING_MODEL
+
     def _get_model(self):
+        """加载 embedding。API 优先，失败试本地模型，都失败返回 None。"""
         if self._model is not None:
             return self._model
         if not self._model_available:
             return None
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
-            return self._model
-        except (ImportError, OSError) as e:
-            self._model_available = False
-            print(f"[memory] embedding 模型未安装，使用关键词匹配: {e}")
-            return None
+
+        # 1) API 优先
+        if self._embed_client is not None:
+            try:
+                self._embed_client.embeddings.create(
+                    model=self._embed_model or self.EMBEDDING_MODEL,
+                    input="test",
+                )
+                self._model = "api"
+                print("[memory] embedding: API 模式")
+                return "api"
+            except Exception:
+                print("[memory] embedding API 不可用，尝试本地模型...")
+
+        # 2) 本地模型
+        model_path = os.environ.get("UKI_EMBEDDING_MODEL", "")
+        if model_path and Path(model_path).exists():
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._model = SentenceTransformer(model_path)
+                print(f"[memory] embedding: 本地模型 ({model_path})")
+                return self._model
+            except Exception as e:
+                print(f"[memory] 本地模型加载失败: {e}")
+
+        # 3) 都不可用
+        self._model_available = False
+        print("[memory] embedding 不可用，记忆注入将跳过")
+        return None
 
     def _encode(self, text: str) -> list[float] | None:
+        """将文本编码为向量。API 模式或本地模式。"""
         model = self._get_model()
         if model is None:
             return None
-        vec = model.encode(text, normalize_embeddings=True)
-        return vec.tolist()
+
+        # API 模式
+        if model == "api" and self._embed_client is not None:
+            try:
+                resp = self._embed_client.embeddings.create(
+                    model=self._embed_model or self.EMBEDDING_MODEL,
+                    input=text,
+                )
+                vec = resp.data[0].embedding
+                # 归一化
+                norm = math.sqrt(sum(x * x for x in vec))
+                if norm > 0:
+                    vec = [x / norm for x in vec]
+                return vec
+            except Exception as e:
+                print(f"[memory] embedding API 调用失败: {e}")
+                self._model = None  # 重置，下次重试
+                self._model_available = False
+                return None
+
+        # 本地模型模式
+        try:
+            vec = model.encode(text, normalize_embeddings=True)
+            return vec.tolist()
+        except Exception as e:
+            print(f"[memory] 本地 embedding 失败: {e}")
+            return None
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:

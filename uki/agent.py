@@ -86,6 +86,9 @@ class UkiAgent:
         self.memory = MemoryStore()
         set_memory_ref(self.memory)  # 让 tools.py 能访问记忆
 
+        # 注入 embedding 客户端（用同一个 OpenAI client）
+        MemoryStore.set_embedding_client(self.client)
+
         # 合并内置工具 + MCP 工具 + 插件工具
         self._rebuild_tool_list()
 

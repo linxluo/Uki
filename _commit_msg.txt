@@ -1,1 +1,1 @@
-Memory: confidence-gated merge - low-confidence memories cannot overwrite high-confidence ones
+Embedding: API-first, local fallback, remove keyword matching entirely
