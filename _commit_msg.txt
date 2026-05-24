@@ -1,1 +1,1 @@
-Lesson 16 v2: SQLite memory + normalized schema + dedup + layered search + LLM feedback + cold storage
+Memory: confidence-gated merge - low-confidence memories cannot overwrite high-confidence ones

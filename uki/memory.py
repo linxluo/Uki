@@ -192,21 +192,32 @@ class MemoryStore:
         # 去重检查
         existing = self._find_by_subject(mem_type, subject)
         if existing:
-            # 合并：更新 value + confidence（取高者）+ importance（取高者）
-            conn.execute(
-                """UPDATE memories SET
-                    value = ?, content = ?, tags = ?,
-                    importance = MAX(importance, ?),
-                    confidence = MAX(confidence, ?),
-                    updated_at = ?,
-                    source = source || ',merged'
-                WHERE id = ?""",
-                (content.strip(), content.strip(),
-                 json.dumps(tags or [], ensure_ascii=False),
-                 importance, confidence, now, existing["id"]),
-            )
+            existing_conf = existing.get("confidence", 0.5)
+            if confidence >= existing_conf:
+                # 新记忆置信度更高 → 覆盖 value
+                conn.execute(
+                    """UPDATE memories SET
+                        value = ?, content = ?, tags = ?,
+                        importance = MAX(importance, ?),
+                        confidence = ?,
+                        updated_at = ?,
+                        source = source || ',merged'
+                    WHERE id = ?""",
+                    (content.strip(), content.strip(),
+                     json.dumps(tags or [], ensure_ascii=False),
+                     importance, confidence, now, existing["id"]),
+                )
+            else:
+                # 新记忆置信度更低 → 不覆盖 value，只升 importance + 记录冲突来源
+                conn.execute(
+                    """UPDATE memories SET
+                        importance = MAX(importance, ?),
+                        updated_at = ?,
+                        source = source || ',conflict_lowconf'
+                    WHERE id = ?""",
+                    (importance, now, existing["id"]),
+                )
             conn.commit()
-            # 重新查询返回
             return dict(self._get_row(existing["id"]))
 
         # 新记忆
