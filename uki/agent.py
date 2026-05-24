@@ -383,6 +383,9 @@ class UkiAgent:
                 if suggestion:
                     display.info(suggestion)
 
+                # 【第16课】LLM 回顾：自动从对话中提取值得记住的信息
+                self._auto_extract_memories(user_message, content)
+
                 return content
 
             # 情况 C：空回复（不太正常，但可以处理）
@@ -408,6 +411,7 @@ class UkiAgent:
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": content})
                 self.has_recent_summary = False
+                self._auto_extract_memories(user_message, content)
                 return content
         except Exception:
             pass
@@ -465,6 +469,48 @@ class UkiAgent:
     # ================================================================
     # 底层 LLM 调用
     # ================================================================
+
+    def _auto_extract_memories(self, user_msg: str, reply: str):
+        """
+        LLM 回顾：从刚完成的对话中自动提取值得持久化的事实/偏好。
+        不阻塞主流程，失败静默忽略。
+        """
+        try:
+            prompt = f"""回顾以下对话，提取值得长期记住的用户信息。
+只提取事实和偏好，不要提取任务细节。
+以 JSON 数组返回，每条包含 content（内容）和 tags（标签）。
+如果没有值得记住的内容，返回空数组 []。
+
+用户: {user_msg[:500]}
+Uki: {reply[:500]}
+
+输出（仅 JSON）:"""
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            text = response.choices[0].message.content or ""
+
+            # 解析 JSON
+            import re as _re
+            json_match = _re.search(r"\[.*?\]", text, _re.DOTALL)
+            if json_match:
+                items = json.loads(json_match.group())
+                for item in items:
+                    content = item.get("content", "").strip()
+                    if content and len(content) > 3:
+                        tags = item.get("tags", [])
+                        # 去重检查
+                        existing = self.memory.search(content, limit=1)
+                        if not existing or content not in existing[0]["content"]:
+                            self.memory.add(content, tags)
+                            display.quiet(f"📝 自动记忆: {content[:50]}...")
+
+        except Exception:
+            pass  # 静默失败，不影响主流程
 
     def _call_llm(self, messages: list, tool_choice: str = "auto"):
         """调用 LLM，开启工具调用能力。遇到速率限制时自动重试（指数退避）。"""

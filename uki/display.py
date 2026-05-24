@@ -52,6 +52,11 @@ def success(text: str):
     print(f"  {_GREEN}✓ {text}{_RESET}")
 
 
+def quiet(text: str):
+    """低调信息（自动记忆等）"""
+    print(f"  {_DIM}📝 {text}{_RESET}")
+
+
 def error(text: str):
     """错误信息"""
     print(f"  {_RED}✗ {text}{_RESET}")

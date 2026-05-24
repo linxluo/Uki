@@ -290,11 +290,22 @@ def _cmd_create_my_plugin(args: str) -> str:
         return "用法: /createMyPlugin <需求描述>\n示例: /createMyPlugin 创建一个翻译插件，支持中英互译"
 
     pm = _agent_ref.plugin_manager
+    memory = _agent_ref.memory
+
+    # 从记忆库检索与需求相关的偏好和上下文
+    relevant_memories = memory.search(requirement, limit=3)
+    memory_context = ""
+    if relevant_memories:
+        lines = ["## 用户相关记忆（请据此调整插件设计）"]
+        for m in relevant_memories:
+            tags_str = f" [{', '.join(m['tags'])}]" if m.get('tags') else ""
+            lines.append(f"-{tags_str} {m['content']}")
+        memory_context = "\n".join(lines) + "\n\n"
 
     # 1. 构造 prompt，让 LLM 生成插件代码
     prompt = f"""请根据以下需求创建一个 Uki 插件。
 
-需求：{requirement}
+{memory_context}需求：{requirement}
 
 ## 插件规范
 一个 Uki 插件包含两个文件：
