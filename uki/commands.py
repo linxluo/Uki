@@ -227,6 +227,59 @@ def _cmd_plugin(args: str) -> str:
     return f"未知子命令: {sub}\n可用: /plugin list | /plugin install <zip路径>"
 
 
+def _cmd_memory(args: str) -> str:
+    """/memory 命令：查看、添加、删除、搜索记忆"""
+    if not _agent_ref:
+        return "无法访问 Agent 实例。"
+
+    parts = args.strip().split(maxsplit=2)
+    sub = parts[0].lower() if parts else ""
+
+    memory = _agent_ref.memory
+
+    if sub == "add":
+        if len(parts) < 2:
+            return "用法: /memory add <内容> [标签,用逗号分隔]\n示例: /memory add 用户喜欢用 Godot 4.x 开发游戏 godot,游戏开发"
+        content = parts[1]
+        tags_str = parts[2] if len(parts) > 2 else ""
+        tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+        mem = memory.add(content, tags)
+        return f"已添加记忆 [{mem['id']}]: {mem['content']}"
+
+    elif sub == "remove" or sub == "delete":
+        if len(parts) < 2:
+            return "用法: /memory remove <关键词>\n示例: /memory remove Godot"
+        keyword = parts[1]
+        n = memory.remove(keyword)
+        return f"已删除 {n} 条包含「{keyword}」的记忆。"
+
+    elif sub == "search":
+        if len(parts) < 2:
+            return "用法: /memory search <关键词>"
+        query = parts[1]
+        results = memory.search(query, limit=10)
+        if not results:
+            return "未找到相关记忆。"
+        lines = [f"找到 {len(results)} 条相关记忆:"]
+        for mem in results:
+            tags_str = f" [{', '.join(mem['tags'])}]" if mem.get('tags') else ""
+            lines.append(f"  [{mem['id']}]{tags_str} {mem['content']}")
+        return "\n".join(lines)
+
+    elif sub == "list" or not sub:
+        all_mem = memory.get_all()
+        if not all_mem:
+            return "记忆库为空。用 /memory add 添加第一条记忆吧。"
+        lines = [f"共 {len(all_mem)} 条记忆:"]
+        for mem in all_mem:
+            tags_str = f" [{', '.join(mem['tags'])}]" if mem.get('tags') else ""
+            lines.append(f"  [{mem['id']}]{tags_str} {mem['content']}")
+        return "\n".join(lines)
+
+    else:
+        return "未知子命令。可用: /memory add <内容> [标签] | /memory list | /memory search <关键词> | /memory remove <关键词>"
+
+
 def _cmd_create_my_plugin(args: str) -> str:
     """/createMyPlugin 命令：根据需求描述自动生成插件并安装"""
     if not _agent_ref:
@@ -368,6 +421,7 @@ def create_builtin_registry() -> CommandRegistry:
     registry.register("/mode", "查看或切换权限模式（default/auto/readonly）", _cmd_mode)
     registry.register("/plugin", "查看已加载的插件状态", _cmd_plugin)
     registry.register("/createMyPlugin", "根据需求描述自动生成并安装插件", _cmd_create_my_plugin)
+    registry.register("/memory", "管理 Uki 的长期记忆（添加/查看/搜索/删除）", _cmd_memory)
 
     # 让 /help 处理器能访问注册表
     import types

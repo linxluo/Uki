@@ -16,6 +16,7 @@ from uki.mcp_client import MCPManager
 from uki.plugin_manager import PluginManager
 from uki import display
 from uki.git_helper import get_summary
+from uki.memory import MemoryStore, record_command, check_suggestion
 
 # 最大循环轮数，防止无限循环消耗费用
 MAX_TURNS = 10
@@ -80,6 +81,9 @@ class UkiAgent:
         # 【第十五课】插件系统
         self.plugin_manager = PluginManager()
         self.plugin_manager.set_agent(self)
+
+        # 【第十六课】记忆系统
+        self.memory = MemoryStore()
 
         # 合并内置工具 + MCP 工具 + 插件工具
         self._rebuild_tool_list()
@@ -298,8 +302,15 @@ class UkiAgent:
 
         对应 Claude Code 的: Prompt → 收集上下文 → 执行动作 → 验证结果 → （循环）
         """
-        # 消息历史：system prompt + 之前的对话历史 + 当前用户消息
-        messages = [{"role": "system", "content": self.system_prompt}]
+        # 消息历史：system prompt + 记忆注入 + 对话历史 + 当前用户消息
+        system_content = self.system_prompt
+
+        # 【第十六课】注入相关记忆
+        memory_fragment = self.memory.inject_prompt(user_message)
+        if memory_fragment:
+            system_content += memory_fragment
+
+        messages = [{"role": "system", "content": system_content}]
 
         # 【第八课】LLM 自动总结：对话历史过长时先压缩再发给 LLM
         self._maybe_summarize()
@@ -350,6 +361,10 @@ class UkiAgent:
                             result = self.mcp.execute(tool_name, tool_args)
                         if result is None:
                             result = execute_tool(tool_name, tool_args)
+
+                        # 【S4】记录命令执行，用于插件自动建议
+                        if tool_name == "execute_bash" and not (result or "").startswith("[安全拦截]"):
+                            record_command(tool_args.get("command", ""))
                     display.tool_result(result)
                     messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
                 continue
@@ -362,6 +377,12 @@ class UkiAgent:
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": content})
                 self.has_recent_summary = False  # 新一轮对话了，允许再次总结
+
+                # 【S4】检查是否应该建议创建插件
+                suggestion = check_suggestion(self.memory)
+                if suggestion:
+                    display.info(suggestion)
+
                 return content
 
             # 情况 C：空回复（不太正常，但可以处理）

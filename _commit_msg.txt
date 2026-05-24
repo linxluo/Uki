@@ -1,1 +1,1 @@
-Fix: max turns summary + rate limit retry
+Lesson 16: memory system + S4 plugin auto-suggestion
