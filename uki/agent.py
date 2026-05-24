@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from openai import OpenAI
 from uki.config import Config
-from uki.tools import TOOL_DEFINITIONS, execute_tool
+from uki.tools import TOOL_DEFINITIONS, execute_tool, set_memory_ref
 from uki.mcp_client import MCPManager
 from uki.plugin_manager import PluginManager
 from uki import display
@@ -84,6 +84,7 @@ class UkiAgent:
 
         # 【第十六课】记忆系统
         self.memory = MemoryStore()
+        set_memory_ref(self.memory)  # 让 tools.py 能访问记忆
 
         # 合并内置工具 + MCP 工具 + 插件工具
         self._rebuild_tool_list()
@@ -473,18 +474,21 @@ class UkiAgent:
     def _auto_extract_memories(self, user_msg: str, reply: str):
         """
         LLM 回顾：从刚完成的对话中自动提取值得持久化的事实/偏好。
-        不阻塞主流程，失败静默忽略。
+        输出规范化 schema，自动去重。
         """
         try:
             prompt = f"""回顾以下对话，提取值得长期记住的用户信息。
 只提取事实和偏好，不要提取任务细节。
-以 JSON 数组返回，每条包含 content（内容）和 tags（标签）。
-如果没有值得记住的内容，返回空数组 []。
+格式：JSON 数组，每条包含：
+- type: "fact" 或 "preference"
+- subject: 简短标识（英文 snake_case，如 "project_path"、"language_preference"）
+- value: 具体内容
+- confidence: 0.0-1.0（你有多确定这条值得记住）
 
 用户: {user_msg[:500]}
 Uki: {reply[:500]}
 
-输出（仅 JSON）:"""
+如果没有值得记住的内容，输出 []。只输出 JSON:"""
 
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -494,23 +498,24 @@ Uki: {reply[:500]}
             )
             text = response.choices[0].message.content or ""
 
-            # 解析 JSON
             import re as _re
             json_match = _re.search(r"\[.*?\]", text, _re.DOTALL)
             if json_match:
                 items = json.loads(json_match.group())
                 for item in items:
-                    content = item.get("content", "").strip()
-                    if content and len(content) > 3:
-                        tags = item.get("tags", [])
-                        # 去重检查
-                        existing = self.memory.search(content, limit=1)
-                        if not existing or content not in existing[0]["content"]:
-                            self.memory.add(content, tags)
-                            display.quiet(f"📝 自动记忆: {content[:50]}...")
-
+                    value = item.get("value", "").strip()
+                    if value and len(value) > 3:
+                        self.memory.add(
+                            content=value,
+                            mem_type=item.get("type", "fact"),
+                            subject=item.get("subject", ""),
+                            confidence=item.get("confidence", 0.5),
+                            importance=5,
+                            source="llm_review",
+                        )
+                        display.quiet(f"自动记忆: {value[:50]}...")
         except Exception:
-            pass  # 静默失败，不影响主流程
+            pass
 
     def _call_llm(self, messages: list, tool_choice: str = "auto"):
         """调用 LLM，开启工具调用能力。遇到速率限制时自动重试（指数退避）。"""

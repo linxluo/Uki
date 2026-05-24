@@ -144,6 +144,46 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "feedback_memory_unhelpful",
+            "description": (
+                "标记一条注入的记忆为无用。当你发现系统注入的某条记忆与当前对话完全无关时调用。"
+                "参数 memory_id 来自记忆条目的 [id] 标识。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "无用记忆的 id（从 [id] 获取）",
+                    },
+                },
+                "required": ["memory_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "feedback_memory_helpful",
+            "description": (
+                "标记一条注入的记忆为有用。当你发现某条记忆对本次对话很有帮助时调用。"
+                "参数 memory_id 来自记忆条目的 [id] 标识。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "有用记忆的 id（从 [id] 获取）",
+                    },
+                },
+                "required": ["memory_id"],
+            },
+        },
+    },
 ]
 
 
@@ -180,6 +220,10 @@ def execute_tool(name: str, arguments: dict) -> str:
             arguments["command"],
             arguments.get("timeout", 60),
         )
+    elif name == "feedback_memory_unhelpful":
+        raw = _feedback_memory(arguments["memory_id"], helpful=False)
+    elif name == "feedback_memory_helpful":
+        raw = _feedback_memory(arguments["memory_id"], helpful=True)
     else:
         return f"未知工具: {name}"
 
@@ -312,6 +356,14 @@ def _is_ignored(file_path: Path) -> bool:
 # execute_bash（S3：执行命令与沙箱）
 # ============================================================
 
+# 全局 agent 引用（用于 feedback 工具访问 memory）
+_memory_ref = None
+
+
+def set_memory_ref(mem):
+    global _memory_ref
+    _memory_ref = mem
+
 # 拦截模式：匹配到的命令直接拒绝，返回安全提示
 _DANGEROUS_PATTERNS = [
     (r"rm\s+-rf\s+/", "禁止递归删除根目录"),
@@ -388,3 +440,15 @@ def _execute_bash(command: str, timeout: int = 60) -> str:
         output += f"\n\n(退出码: {result.returncode})"
 
     return output
+
+
+def _feedback_memory(memory_id: str, helpful: bool) -> str:
+    """LLM 反馈记忆有用/无用"""
+    if _memory_ref is None:
+        return "记忆系统未初始化。"
+    if helpful:
+        ok = _memory_ref.mark_helpful(memory_id)
+        return "已标记为有用。" if ok else "未找到该记忆。"
+    else:
+        ok = _memory_ref.mark_unhelpful(memory_id)
+        return "已标记为无用。" if ok else "未找到该记忆。"

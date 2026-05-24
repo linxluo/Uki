@@ -1,20 +1,20 @@
 """
-Uki 记忆系统（第 16 课）
+Uki 记忆系统（第 16 课 - v2 SQLite 版）
 
 跨会话长期记忆的存储、检索和注入。
 
-每条记忆是一个记录：
-- content: 记忆内容
-- tags: 标签列表（用于分类和检索）
-- timestamp: 创建时间
-- importance: 重要程度 1-10
-- embedding: 语义向量（自动生成，用于语义搜索）
+记忆规范：
+- type: fact / preference / pattern / plugin_suggestion
+- subject: 简短标识（如 "project_path", "language_preference"）
+- value: 具体内容
+- confidence: 置信度 0.0-1.0（LLM 回顾自动提取的 < 用户手动标记的）
 
-存储位置：~/.uki_memory.json
+生命周期：
+  产生 → 规范(type/subject/value) → 去重(type+subject) → 存入 SQLite
+  → 分层检索(importance优先) → LLM反馈 → 衰减 → 冷存储归档
 
-检索策略：
-- 优先语义搜索（本地 embedding 模型，余弦相似度）
-- 模型未就绪时 fallback 到关键词匹配
+存储：SQLite（项目目录 .uki_memory.db）
+embedding 存储为 JSON TEXT 列，搜索时在应用层做余弦相似度。
 """
 
 from __future__ import annotations
@@ -24,40 +24,409 @@ import os
 import re
 import time
 import math
+import sqlite3
 from pathlib import Path
 
 
-MEMORY_FILE = Path.home() / ".uki_memory.json"
+# 存储位置
+DB_FILE = Path.home() / ".uki_memory.db"
+OLD_JSON_FILE = Path.home() / ".uki_memory.json"
 
-# 每次注入到 system prompt 的记忆条数上限
+# 每次注入上限
 MAX_INJECT_MEMORIES = 5
 
+# 衰减参数
+MAX_AGE_DAYS = 90
+MIN_IMPORTANCE = 2
+DECAY_RATE = 0.5
+
+
+# ============================================================
+# SQLite Schema
+# ============================================================
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    value TEXT NOT NULL,
+    content TEXT,
+    tags TEXT DEFAULT '[]',
+    importance INTEGER DEFAULT 5,
+    confidence REAL DEFAULT 0.5,
+    access_count INTEGER DEFAULT 0,
+    last_accessed REAL,
+    embedding TEXT,
+    created_at REAL,
+    updated_at REAL,
+    source TEXT DEFAULT 'manual',
+    status TEXT DEFAULT 'active'
+);
+
+CREATE INDEX IF NOT EXISTS idx_type_subject ON memories(type, subject);
+CREATE INDEX IF NOT EXISTS idx_importance ON memories(importance);
+CREATE INDEX IF NOT EXISTS idx_status ON memories(status);
+
+CREATE TABLE IF NOT EXISTS cold_memories (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    value TEXT NOT NULL,
+    content TEXT,
+    tags TEXT DEFAULT '[]',
+    importance INTEGER DEFAULT 5,
+    confidence REAL DEFAULT 0.5,
+    access_count INTEGER DEFAULT 0,
+    last_accessed REAL,
+    embedding TEXT,
+    created_at REAL,
+    updated_at REAL,
+    source TEXT DEFAULT 'manual',
+    status TEXT DEFAULT 'archived',
+    archived_at REAL
+);
+
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+"""
+
+
+# ============================================================
+# MemoryStore
+# ============================================================
 
 class MemoryStore:
-    """记忆存储引擎。优先语义搜索，fallback 关键词匹配。"""
+    """记忆存储引擎。SQLite 后台，embedding 搜索在应用层。"""
 
-    # 本地 embedding 模型名
     EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
-    # 重要性衰减参数
-    MAX_AGE_DAYS = 90      # 超过此天数的记忆会被衰减
-    MIN_IMPORTANCE = 2     # 低于此值的记忆将被删除
-    DECAY_RATE = 0.5       # 每周衰减一半重要性（无命中时）
-
-    def __init__(self, path: Path | None = None):
-        self.file = path or MEMORY_FILE
-        self._memories: list[dict] = []
-        self._model = None  # 懒加载
+    def __init__(self, db_path: Path | None = None):
+        self.db_path = db_path or DB_FILE
+        self._conn: sqlite3.Connection | None = None
+        self._model = None
         self._model_available = True
-        self._decay_checked = False  # 每个 session 只衰减一次
-        self._load()
+        self._decay_checked = False
+        self._init_db()
+        self._migrate_from_json()
 
     # ============================================================
-    # Embedding 模型（懒加载）
+    # SQLite 初始化
+    # ============================================================
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+        return self._conn
+
+    def _init_db(self):
+        conn = self._get_conn()
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+
+    def _migrate_from_json(self):
+        """从旧版 ~/.uki_memory.json 迁移到 SQLite"""
+        if not OLD_JSON_FILE.exists():
+            return
+        try:
+            old_data = json.loads(OLD_JSON_FILE.read_text(encoding="utf-8"))
+            if not isinstance(old_data, list) or not old_data:
+                return
+
+            conn = self._get_conn()
+            migrated = 0
+            for item in old_data:
+                content = item.get("content", "")
+                tags = item.get("tags", [])
+                # 推断 type：有 tags 的偏 fact，标签含"偏好/习惯"的归 preference
+                mem_type = "preference" if any(
+                    t in str(tags).lower() for t in ["偏好", "习惯", "喜欢", "preference"]
+                ) else "fact"
+                subject = _infer_subject(content, mem_type)
+                self._insert_row(conn, {
+                    "id": item.get("id", _short_id()),
+                    "type": mem_type,
+                    "subject": subject,
+                    "value": content,
+                    "content": content,
+                    "tags": json.dumps(item.get("tags", []), ensure_ascii=False),
+                    "importance": item.get("importance", 5),
+                    "confidence": 0.8,
+                    "access_count": item.get("access_count", 0),
+                    "last_accessed": item.get("last_accessed", time.time()),
+                    "embedding": json.dumps(item.get("embedding")) if item.get("embedding") else None,
+                    "created_at": item.get("timestamp", time.time()),
+                    "updated_at": time.time(),
+                    "source": "migrated",
+                    "status": "active",
+                }, on_conflict="ignore")
+                migrated += 1
+
+            conn.commit()
+            if migrated:
+                # 备份旧文件后删除
+                backup = OLD_JSON_FILE.with_suffix(".json.bak")
+                OLD_JSON_FILE.rename(backup)
+                print(f"[memory] 已从 JSON 迁移 {migrated} 条记忆到 SQLite")
+        except (json.JSONDecodeError, OSError, sqlite3.Error):
+            pass
+
+    # ============================================================
+    # CRUD
+    # ============================================================
+
+    def add(self, content: str, tags: list[str] | None = None,
+            importance: int = 5, confidence: float = 0.5,
+            mem_type: str = "fact", subject: str = "",
+            source: str = "manual") -> dict:
+        """添加一条记忆。同 type+subject 会合并而非新增（去重）。"""
+        conn = self._get_conn()
+        now = time.time()
+
+        if not subject:
+            subject = _infer_subject(content, mem_type)
+
+        # 去重检查
+        existing = self._find_by_subject(mem_type, subject)
+        if existing:
+            # 合并：更新 value + confidence（取高者）+ importance（取高者）
+            conn.execute(
+                """UPDATE memories SET
+                    value = ?, content = ?, tags = ?,
+                    importance = MAX(importance, ?),
+                    confidence = MAX(confidence, ?),
+                    updated_at = ?,
+                    source = source || ',merged'
+                WHERE id = ?""",
+                (content.strip(), content.strip(),
+                 json.dumps(tags or [], ensure_ascii=False),
+                 importance, confidence, now, existing["id"]),
+            )
+            conn.commit()
+            # 重新查询返回
+            return dict(self._get_row(existing["id"]))
+
+        # 新记忆
+        mem_id = _short_id()
+        embedding = self._encode(content.strip())
+        row = {
+            "id": mem_id, "type": mem_type, "subject": subject,
+            "value": content.strip(), "content": content.strip(),
+            "tags": json.dumps(tags or [], ensure_ascii=False),
+            "importance": min(max(importance, 1), 10),
+            "confidence": min(max(confidence, 0.0), 1.0),
+            "access_count": 0, "last_accessed": now,
+            "embedding": json.dumps(embedding) if embedding else None,
+            "created_at": now, "updated_at": now,
+            "source": source, "status": "active",
+        }
+        self._insert_row(conn, row)
+        conn.commit()
+        return dict(self._get_row(mem_id))
+
+    def remove(self, query: str) -> int:
+        """删除 content 中包含 query 的记忆。返回删除数量。"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM memories WHERE status='active' AND (content LIKE ? OR value LIKE ?)",
+            (f"%{query}%", f"%{query}%"),
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    def get_all(self, status: str = "active") -> list[dict]:
+        """返回全部活跃记忆"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM memories WHERE status=? ORDER BY importance DESC, updated_at DESC",
+            (status,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def search(self, query: str, limit: int = MAX_INJECT_MEMORIES,
+               min_importance: int = 0) -> list[dict]:
+        """
+        分层检索相关记忆。
+        优先语义搜索，fallback 关键词匹配。
+        按 importance 降序，limit 条。
+        """
+        conn = self._get_conn()
+
+        # 每个 session 运行一次衰减
+        if not self._decay_checked:
+            self._apply_decay()
+            self._decay_checked = True
+
+        # 取活跃记忆
+        rows = conn.execute(
+            "SELECT * FROM memories WHERE status='active' AND importance >= ?",
+            (min_importance,),
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        memories = [_row_to_dict(r) for r in rows]
+
+        # 语义搜索
+        query_vec = self._encode(query)
+        if query_vec is not None and any(m.get("embedding") for m in memories):
+            results = self._semantic_search(query_vec, memories, limit)
+        else:
+            results = self._keyword_search(query, memories, limit)
+
+        # 更新访问计数
+        now = time.time()
+        ids = [m["id"] for m in results]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE memories SET access_count=access_count+1, last_accessed=? WHERE id IN ({placeholders})",
+                [now] + ids,
+            )
+            conn.commit()
+
+        return results
+
+    def count(self) -> int:
+        conn = self._get_conn()
+        return conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE status='active'"
+        ).fetchone()[0]
+
+    # ============================================================
+    # 分层检索
+    # ============================================================
+
+    def search_layered(self, query: str) -> list[dict]:
+        """
+        分层检索：
+        第一层: importance >= 7 → top-2
+        不够 → 第二层: importance >= 4 → top-3 追加
+        还不够 → 全量 top-5
+        """
+        results = self.search(query, limit=2, min_importance=7)
+        if len(results) < 2:
+            more = self.search(query, limit=3, min_importance=4)
+            for m in more:
+                if m["id"] not in {r["id"] for r in results}:
+                    results.append(m)
+        if len(results) < 3:
+            more = self.search(query, limit=5)
+            for m in more:
+                if m["id"] not in {r["id"] for r in results}:
+                    results.append(m)
+        return results[:MAX_INJECT_MEMORIES]
+
+    # ============================================================
+    # LLM 反馈
+    # ============================================================
+
+    def mark_unhelpful(self, memory_id: str) -> bool:
+        """
+        LLM 反馈某条记忆无用。
+        importance 骤降到 0，下次衰减时会被清理到冷存储。
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE memories SET importance=0, updated_at=? WHERE id=? AND status='active'",
+            (time.time(), memory_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    def mark_helpful(self, memory_id: str) -> bool:
+        """LLM 反馈某条记忆有用，提升 importance"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "UPDATE memories SET importance=MIN(10, importance+2), access_count=access_count+1, updated_at=? WHERE id=? AND status='active'",
+            (time.time(), memory_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    # ============================================================
+    # 冷存储
+    # ============================================================
+
+    def archive(self, memory_ids: list[str] | None = None, query: str | None = None) -> int:
+        """
+        将记忆移到冷存储。
+        - 传 memory_ids: 归档指定记忆
+        - 传 query: 归档包含关键词的记忆
+        - 都不传: 归档 importance < MIN_IMPORTANCE 的记忆
+        """
+        conn = self._get_conn()
+        now = time.time()
+        moved = 0
+
+        if memory_ids:
+            placeholders = ",".join("?" for _ in memory_ids)
+            conn.execute(
+                f"""INSERT INTO cold_memories SELECT *, ? FROM memories WHERE id IN ({placeholders})""",
+                [now] + memory_ids,
+            )
+            cursor = conn.execute(
+                f"DELETE FROM memories WHERE id IN ({placeholders})",
+                memory_ids,
+            )
+            moved = cursor.rowcount
+        elif query:
+            conn.execute(
+                "INSERT INTO cold_memories SELECT *, ? FROM memories WHERE status='active' AND (content LIKE ? OR value LIKE ?)",
+                (now, f"%{query}%", f"%{query}%"),
+            )
+            cursor = conn.execute(
+                "DELETE FROM memories WHERE status='active' AND (content LIKE ? OR value LIKE ?)",
+                (f"%{query}%", f"%{query}%"),
+            )
+            moved = cursor.rowcount
+        else:
+            conn.execute(
+                "INSERT INTO cold_memories SELECT *, ? FROM memories WHERE status='active' AND importance < ?",
+                (now, MIN_IMPORTANCE),
+            )
+            cursor = conn.execute(
+                "DELETE FROM memories WHERE status='active' AND importance < ?",
+                (MIN_IMPORTANCE,),
+            )
+            moved = cursor.rowcount
+
+        conn.commit()
+        if moved:
+            print(f"[memory] {moved} 条记忆已归档到冷存储")
+        return moved
+
+    def get_cold_count(self) -> int:
+        conn = self._get_conn()
+        return conn.execute("SELECT COUNT(*) FROM cold_memories").fetchone()[0]
+
+    # ============================================================
+    # 注入
+    # ============================================================
+
+    def inject_prompt(self, user_message: str) -> str:
+        """生成注入到 system prompt 的记忆片段"""
+        relevant = self.search_layered(user_message)
+        if not relevant:
+            return ""
+
+        lines = ["", "## 相关记忆"]
+        for i, mem in enumerate(relevant, 1):
+            tags = json.loads(mem.get("tags", "[]"))
+            tags_str = f" [{', '.join(tags)}]" if tags else ""
+            lines.append(f"{i}.{tags_str} {mem['content'] or mem['value']}")
+
+        return "\n".join(lines)
+
+    # ============================================================
+    # Embedding
     # ============================================================
 
     def _get_model(self):
-        """懒加载 embedding 模型。失败返回 None"""
         if self._model is not None:
             return self._model
         if not self._model_available:
@@ -68,11 +437,10 @@ class MemoryStore:
             return self._model
         except (ImportError, OSError) as e:
             self._model_available = False
-            print(f"[memory] embedding 模型加载失败，使用关键词匹配: {e}")
+            print(f"[memory] embedding 模型未安装，使用关键词匹配: {e}")
             return None
 
     def _encode(self, text: str) -> list[float] | None:
-        """将文本编码为向量"""
         model = self._get_model()
         if model is None:
             return None
@@ -81,326 +449,239 @@ class MemoryStore:
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        """余弦相似度（假设向量已归一化，直接点积）"""
         if not a or not b or len(a) != len(b):
             return 0.0
         return sum(x * y for x, y in zip(a, b))
 
     # ============================================================
-    # 增删查
+    # 搜索实现
     # ============================================================
 
-    def add(self, content: str, tags: list[str] | None = None, importance: int = 5) -> dict:
-        """添加一条记忆，自动生成 embedding 向量"""
-        mem = {
-            "id": _short_id(),
-            "content": content.strip(),
-            "tags": tags or [],
-            "importance": min(max(importance, 1), 10),
-            "timestamp": time.time(),
-            "timestamp_str": _format_time(time.time()),
-            "embedding": self._encode(content.strip()),
-            "access_count": 0,       # 被检索到的次数
-            "last_accessed": time.time(),
-        }
-        self._memories.append(mem)
-        self._save()
-        return mem
-
-    def remove(self, query: str) -> int:
-        """删除匹配 query 的记忆（模糊匹配 content），返回删除数量"""
-        query_lower = query.lower()
-        before = len(self._memories)
-        self._memories = [
-            m for m in self._memories
-            if query_lower not in m["content"].lower()
-        ]
-        removed = before - len(self._memories)
-        if removed:
-            self._save()
-        return removed
-
-    def get_all(self) -> list[dict]:
-        """返回全部记忆"""
-        return list(self._memories)
-
-    def search(self, query: str, limit: int = MAX_INJECT_MEMORIES) -> list[dict]:
-        """
-        检索相关记忆。
-        优先语义搜索（embedding + 余弦相似度），
-        模型未就绪时 fallback 到关键词匹配。
-        自动记录访问次数，定期衰减旧记忆。
-        """
-        if not self._memories:
-            return []
-
-        # 每个 session 运行一次衰减
-        if not self._decay_checked:
-            self._apply_decay()
-            self._decay_checked = True
-
-        # 尝试语义搜索
-        query_vec = self._encode(query)
-        if query_vec is not None and any(m.get("embedding") for m in self._memories):
-            results = self._semantic_search(query_vec, limit)
-        else:
-            results = self._keyword_search(query, limit)
-
-        # 更新访问计数
-        now = time.time()
-        for mem in results:
-            mem["access_count"] = mem.get("access_count", 0) + 1
-            mem["last_accessed"] = now
-        if results:
-            self._save()
-
-        return results
-
-    def _semantic_search(self, query_vec: list[float], limit: int) -> list[dict]:
-        """基于 embedding 余弦相似度的语义搜索"""
+    def _semantic_search(self, query_vec: list[float], memories: list[dict], limit: int) -> list[dict]:
         scored: list[tuple[float, dict]] = []
-        for mem in self._memories:
-            emb = mem.get("embedding")
-            if emb is None:
+        for mem in memories:
+            emb_json = mem.get("embedding")
+            if not emb_json:
+                continue
+            try:
+                emb = json.loads(emb_json) if isinstance(emb_json, str) else emb_json
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not emb:
                 continue
             similarity = self._cosine_similarity(query_vec, emb)
-            # 加权：相似度 + 重要性
-            score = similarity * 10 + mem.get("importance", 5) * 0.1
-            if similarity > 0.2:  # 过滤明显无关的
+            if similarity > 0.2:
+                score = similarity * 10 + mem.get("importance", 5) * 0.1
                 scored.append((score, mem))
-
         scored.sort(key=lambda x: -x[0])
         return [mem for _, mem in scored[:limit]]
 
-    def _keyword_search(self, query: str, limit: int) -> list[dict]:
-        """关键词匹配（fallback）"""
+    def _keyword_search(self, query: str, memories: list[dict], limit: int) -> list[dict]:
         query_words = set(_tokenize(query))
         if not query_words:
             return []
-
         scored: list[tuple[int, dict]] = []
-        for mem in self._memories:
+        for mem in memories:
             score = _relevance_score(query_words, mem)
             if score > 0:
                 scored.append((score, mem))
-
         scored.sort(key=lambda x: (-x[0], x[1].get("importance", 5)))
         return [mem for _, mem in scored[:limit]]
-
-    def count(self) -> int:
-        return len(self._memories)
 
     # ============================================================
     # 重要性衰减
     # ============================================================
 
     def _apply_decay(self):
-        """
-        衰减记忆的重要性。
-        - 从未被访问过且超过 MAX_AGE_DAYS → 重要性减 DECAY_RATE
-        - 低于 MIN_IMPORTANCE → 删除
-        """
+        conn = self._get_conn()
         now = time.time()
-        seven_days = 7 * 24 * 3600
-        aged_day = self.MAX_AGE_DAYS * 24 * 3600
+        aged_ago = now - (MAX_AGE_DAYS * 24 * 3600)
 
-        to_remove: list[str] = []
-        for mem in self._memories:
-            age = now - mem["timestamp"]
-            access_count = mem.get("access_count", 0)
-
-            # 从未被访问过的旧记忆：衰减
-            if access_count == 0 and age > aged_day:
-                mem["importance"] = mem.get("importance", 5) - self.DECAY_RATE
-
-            # 低重要性：删除
-            if mem.get("importance", 5) < self.MIN_IMPORTANCE:
-                to_remove.append(mem["id"])
-
-            # 最近被频繁访问的记忆：升重要性
-            elif access_count >= 5 and age < seven_days * 4:
-                mem["importance"] = min(10, mem.get("importance", 5) + 1)
-
-        if to_remove:
-            self._memories = [m for m in self._memories if m["id"] not in to_remove]
-            print(f"[memory] 衰减清理了 {len(to_remove)} 条低重要性记忆")
-
-        if to_remove:
-            self._save()
-
-    # ============================================================
-    # 持久化
-    # ============================================================
-
-    def _load(self):
-        if self.file.exists():
-            try:
-                data = json.loads(self.file.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    self._memories = data
-            except (json.JSONDecodeError, OSError):
-                self._memories = []
-
-    def _save(self):
-        self.file.parent.mkdir(parents=True, exist_ok=True)
-        self.file.write_text(
-            json.dumps(self._memories, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        # 衰减：从未访问过且超过 MAX_AGE_DAYS 的记忆重要性 -0.5
+        conn.execute(
+            """UPDATE memories SET importance = MAX(0, importance - ?)
+               WHERE status='active' AND access_count=0 AND created_at < ?""",
+            (DECAY_RATE, aged_ago),
         )
 
+        # 标记 important=0 的为待归档
+        stale = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE status='active' AND importance=0"
+        ).fetchone()[0]
+
+        # 最近频繁访问的：升 importance
+        recent = now - (4 * 7 * 24 * 3600)  # 4 周
+        conn.execute(
+            """UPDATE memories SET importance = MIN(10, importance + 1)
+               WHERE status='active' AND access_count >= 5 AND last_accessed > ?""",
+            (recent,),
+        )
+
+        conn.commit()
+
+        if stale > 0:
+            import_count = self.archive()
+            if import_count > 0:
+                print(f"[memory] 衰减: {import_count} 条低重要性记忆已归档")
+
     # ============================================================
-    # 注入
+    # SQLite 辅助
     # ============================================================
 
-    def inject_prompt(self, user_message: str) -> str:
-        """
-        生成注入到 system prompt 的记忆片段。
-        空消息返回空字符串。
-        """
-        relevant = self.search(user_message)
-        if not relevant:
-            return ""
+    def _insert_row(self, conn, row: dict, on_conflict: str = "ignore"):
+        """插入一行，on_conflict='ignore' 跳过重复"""
+        columns = list(row.keys())
+        placeholders = ",".join("?" for _ in columns)
+        cols = ",".join(columns)
+        or_ignore = "OR IGNORE" if on_conflict == "ignore" else ""
+        conn.execute(
+            f"INSERT {or_ignore} INTO memories ({cols}) VALUES ({placeholders})",
+            list(row.values()),
+        )
 
-        lines = ["", "## 相关记忆"]
-        for i, mem in enumerate(relevant, 1):
-            tags_str = f" [{', '.join(mem['tags'])}]" if mem.get("tags") else ""
-            lines.append(f"{i}.{tags_str} {mem['content']}")
+    def _get_row(self, mem_id: str) -> sqlite3.Row | None:
+        conn = self._get_conn()
+        return conn.execute(
+            "SELECT * FROM memories WHERE id=?", (mem_id,)
+        ).fetchone()
 
-        return "\n".join(lines)
+    def _find_by_subject(self, mem_type: str, subject: str) -> dict | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM memories WHERE type=? AND subject=? AND status='active'",
+            (mem_type, subject),
+        ).fetchone()
+        return _row_to_dict(row) if row else None
 
 
 # ============================================================
-# 内部工具
+# 工具函数
 # ============================================================
 
 def _short_id() -> str:
-    """6 位短 ID"""
-    import random
-    import string
+    import random, string
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
 def _tokenize(text: str) -> list[str]:
-    """中文+英文混合分词"""
     tokens: list[str] = []
-    # 提取中文单字
-    chinese = re.findall(r"[\u4e00-\u9fff]", text)
-    tokens.extend(chinese)
-    # 提取英文单词
-    english = re.findall(r"[a-zA-Z]+", text.lower())
-    tokens.extend(english)
-    # 提取数字
-    numbers = re.findall(r"\d+", text)
-    tokens.extend(numbers)
+    tokens.extend(re.findall(r"[\u4e00-\u9fff]", text))
+    tokens.extend(re.findall(r"[a-zA-Z]+", text.lower()))
+    tokens.extend(re.findall(r"\d+", text))
     return tokens
 
 
 def _relevance_score(query_words: set, mem: dict) -> int:
-    """计算记忆与查询的相关性分数"""
     score = 0
-
-    # 标签精确匹配（权重最高）
-    mem_tags = mem.get("tags", [])
-    for tag in mem_tags:
+    tags = mem.get("tags", "[]")
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except (json.JSONDecodeError, TypeError):
+            tags = []
+    for tag in tags:
         tag_lower = tag.lower()
         for qw in query_words:
             if qw in tag_lower:
                 score += 10
-
-    # 内容关键词重叠
-    content_lower = mem["content"].lower()
+    content = (mem.get("content") or mem.get("value", "")).lower()
     for qw in query_words:
-        if qw in content_lower:
+        if qw in content:
             score += 3
+    return score + mem.get("importance", 5)
 
-    # 重要性加权
-    importance = mem.get("importance", 5)
-    score += importance
 
-    return score
+def _infer_subject(content: str, mem_type: str) -> str:
+    """从内容推断 subject 标识"""
+    content_lower = content.lower()
+    # 常用关键词 → subject 映射
+    patterns = [
+        (r"项目|project|路径|path", "project_path"),
+        (r"godot|引擎|游戏引擎|game engine", "tech_stack_godot"),
+        (r"语言|language|中文|英文|english|chinese", "language_preference"),
+        (r"工作|work|早上|上午|晚上|时间", "work_schedule"),
+        (r"习惯|偏好|喜欢|prefer", "user_preference"),
+        (r"python|rust|go|node|java|typescript", "programming_language"),
+        (r"api.key|token|密钥|凭证", "credentials"),
+        (r"bug|fix|debug|修复", "bug_record"),
+        (r"插件|plugin|skill", "plugin_related"),
+    ]
+    for pattern, subject in patterns:
+        if re.search(pattern, content_lower):
+            return subject
+    # 默认：取前 8 个字的 hash
+    import hashlib
+    return "mem_" + hashlib.md5(content.encode()).hexdigest()[:8]
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    if row is None:
+        return {}
+    d = dict(row)
+    # 还原 JSON 字段
+    for key in ("tags", "embedding"):
+        if key in d and isinstance(d[key], str):
+            try:
+                d[key] = json.loads(d[key])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return d
 
 
 def _format_time(ts: float) -> str:
-    """时间戳转为可读字符串"""
     from datetime import datetime
-    dt = datetime.fromtimestamp(ts)
-    return dt.strftime("%Y-%m-%d %H:%M")
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 # ============================================================
-# S4: 插件自动建议（重复脚本检测）
+# S4: 插件自动建议（保留，单开函数不变）
 # ============================================================
 
-# 建议阈值：同一脚本模式出现 N 次后触发建议
 SUGGEST_THRESHOLD = 3
-
-# 记录最近的命令执行
 _COMMAND_HISTORY: list[dict] = []
 
 
 def record_command(command: str) -> None:
-    """记录一次命令执行，用于后续模式检测"""
-    _COMMAND_HISTORY.append({
-        "command": command,
-        "timestamp": time.time(),
-    })
-    # 只保留最近 50 条
+    _COMMAND_HISTORY.append({"command": command, "timestamp": time.time()})
     if len(_COMMAND_HISTORY) > 50:
         _COMMAND_HISTORY.pop(0)
 
 
 def check_suggestion(memory: MemoryStore) -> str | None:
-    """
-    检查是否应该建议创建插件。
-    返回建议文本，或 None（不需要建议）。
-    """
     if len(_COMMAND_HISTORY) < SUGGEST_THRESHOLD:
         return None
-
-    # 提取命令中的关键模式（去掉参数，保留命令名 + 核心操作）
     patterns: dict[str, int] = {}
     for entry in _COMMAND_HISTORY:
         pattern = _extract_pattern(entry["command"])
         if pattern:
             patterns[pattern] = patterns.get(pattern, 0) + 1
-
-    # 找到重复最多的模式
     for pattern, count in patterns.items():
         if count >= SUGGEST_THRESHOLD:
-            # 检查用户是否已经拒绝了该建议
-            if _already_suggested(memory, pattern):
+            if _already_suggested_db(memory, pattern):
                 continue
-            suggestion = (
+            return (
                 f"💡 我注意到你经常执行 `{pattern}` 这类命令。"
                 f"要不要我帮你生成一个插件，以后一条命令就能完成？"
             )
-            return suggestion
-
     return None
 
 
 def _extract_pattern(command: str) -> str:
-    """从命令中提取模式标识"""
-    # 去掉 pip install 后的包名
     if "pip install" in command:
         return "pip install <package>"
-    # 去掉 python -c 后的代码
     if "python -c" in command:
         return "python -c <script>"
-    # 去掉文件路径参数
     if re.search(r"python\s+\S+\.py", command):
         return "python <script.py>"
-    # 通用：保留命令前 3 个词
     parts = command.split()
     key = " ".join(parts[:4])
-    if len(key) > 40:
-        key = key[:40] + "..."
-    return key
+    return key[:40] + "..." if len(key) > 40 else key
 
 
-def _already_suggested(memory: MemoryStore, pattern: str) -> bool:
-    """检查该模式是否已经被建议过"""
-    for mem in memory.get_all():
-        if "插件建议" in mem.get("content", "") and pattern in mem["content"]:
-            return True
-    return False
+def _already_suggested_db(memory: MemoryStore, pattern: str) -> bool:
+    conn = memory._get_conn()
+    row = conn.execute(
+        "SELECT 1 FROM memories WHERE type='plugin_suggestion' AND content LIKE ?",
+        (f"%{pattern}%",),
+    ).fetchone()
+    return row is not None

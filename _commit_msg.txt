@@ -1,1 +1,1 @@
-Lesson 16: memory-aware plugin gen, LLM auto-review, importance decay
+Lesson 16 v2: SQLite memory + normalized schema + dedup + layered search + LLM feedback + cold storage

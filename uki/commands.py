@@ -8,6 +8,8 @@ Uki 的命令系统
 可以通过 register() 动态注册新命令。
 """
 
+import json
+
 import textwrap
 from uki.config import Config
 
@@ -272,12 +274,28 @@ def _cmd_memory(args: str) -> str:
             return "记忆库为空。用 /memory add 添加第一条记忆吧。"
         lines = [f"共 {len(all_mem)} 条记忆:"]
         for mem in all_mem:
-            tags_str = f" [{', '.join(mem['tags'])}]" if mem.get('tags') else ""
-            lines.append(f"  [{mem['id']}]{tags_str} {mem['content']}")
+            tags = mem.get("tags", [])
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except (json.JSONDecodeError, TypeError):
+                    tags = []
+            tags_str = f" [{', '.join(tags)}]" if tags else ""
+            lines.append(f"  [{mem['id']}] {mem.get('type','?')}/{mem.get('subject','?')}: {mem.get('value',mem.get('content',''))}")
         return "\n".join(lines)
 
+    elif sub == "archive":
+        keyword = parts[1] if len(parts) > 1 else ""
+        if keyword:
+            n = memory.archive(query=keyword)
+            return f"已归档 {n} 条包含「{keyword}」的记忆到冷存储。"
+        else:
+            n = memory.archive()
+            cold = memory.get_cold_count()
+            return f"已归档 {n} 条低重要性记忆到冷存储。\n冷存储共 {cold} 条记忆。"
+
     else:
-        return "未知子命令。可用: /memory add <内容> [标签] | /memory list | /memory search <关键词> | /memory remove <关键词>"
+        return "未知子命令。可用: /memory add | list | search | remove | archive [关键词]"
 
 
 def _cmd_create_my_plugin(args: str) -> str:
